@@ -6,6 +6,7 @@ export default function LandingPage() {
   window.location.href =
     'https://digithackertool-backend.onrender.com/api/auth/deriv';
 };
+};
 
   };
 
