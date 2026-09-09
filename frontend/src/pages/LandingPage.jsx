@@ -3,7 +3,10 @@ import { TrendingUp, Zap, Shield, BarChart3 } from 'lucide-react';
 
 export default function LandingPage() {
   const handleLogin = () => {
-    window.location.href = '/api/auth/deriv';
+  window.location.href =
+    'https://digithackertool-backend.onrender.com/api/auth/deriv';
+};
+
   };
 
   return (
