@@ -34,7 +34,7 @@ app.use(session({
 }));
 
 // Routes
-app.use('/auth', authRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/user', userRoutes);
 app.use('/ticks', tickRoutes);
 
