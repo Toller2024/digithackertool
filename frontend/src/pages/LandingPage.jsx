@@ -6,9 +6,6 @@ export default function LandingPage() {
   window.location.href =
     'https://digithackertool-backend.onrender.com/api/auth/deriv';
 };
-};
-
-  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-800 text-white">
