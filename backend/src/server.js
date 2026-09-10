@@ -4,7 +4,9 @@ import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
 import dotenv from 'dotenv';
+
 import { connectDB } from './config/database.js';
+
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/user.js';
 import tickRoutes from './routes/ticks.js';
@@ -12,16 +14,57 @@ import tickRoutes from './routes/ticks.js';
 dotenv.config();
 
 const app = express();
+
 const PORT = process.env.PORT || 5000;
+
+// Allowed frontend origins
+const allowedOrigins = [
+  'https://digitalhackertool.vercel.app',
+  'https://www.digitalhackertool.vercel.app'
+];
 
 // Middleware
 app.use(helmet());
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: function (origin, callback) {
+    // Allow requests without an Origin header
+    // such as direct server-to-server requests.
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    // Allow the main Vercel website
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    // Allow Vercel preview deployments
+    if (
+      origin.endsWith('.vercel.app') &&
+      origin.startsWith('https://')
+    ) {
+      return callback(null, true);
+    }
+
+    // Allow configured frontend URL if present
+    if (
+      process.env.FRONTEND_URL &&
+      origin === process.env.FRONTEND_URL
+    ) {
+      return callback(null, true);
+    }
+
+    return callback(
+      new Error('Not allowed by CORS')
+    );
+  },
   credentials: true
 }));
+
 app.use(express.json());
 app.use(cookieParser());
+
 app.use(session({
   secret: process.env.SESSION_SECRET,
   resave: false,
@@ -29,7 +72,7 @@ app.use(session({
   cookie: {
     secure: process.env.NODE_ENV === 'production',
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    maxAge: 24 * 60 * 60 * 1000
   }
 }));
 
@@ -39,7 +82,10 @@ app.use('/user', userRoutes);
 app.use('/ticks', tickRoutes);
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Connect to database and start server
