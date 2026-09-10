@@ -28,8 +28,10 @@ class DerivAPI {
       });
 
       this.ws.on('error', (err) => {
-  console.error('❌ WebSocket error:', err);
-  reject(err);
+  console.error('❌ WebSocket error message:', err?.message || String(err));
+  console.error('❌ WebSocket error code:', err?.code || 'none');
+  reject(new Error(err?.message || 'WebSocket connection failed'));
+});
 });
     });
   }
