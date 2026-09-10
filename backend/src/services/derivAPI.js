@@ -9,39 +9,38 @@ class DerivAPI {
   }
 
   connect() {
-  return new Promise((resolve, reject) => {
-    const wsUrl = 'wss://api.derivws.com/trading/v1/options/ws/public';
-    this.ws = new WebSocket(wsUrl);
+    return new Promise((resolve, reject) => {
+      const wsUrl = 'wss://api.derivws.com/trading/v1/options/ws/public';
 
-    this.ws.on('open', () => {
-      console.log('✅ Connected to Deriv WebSocket');
-      resolve();
-    });
+      this.ws = new WebSocket(wsUrl);
 
-    this.ws.on('message', (data) => {
-      const response = JSON.parse(data.toString());
+      this.ws.on('open', () => {
+        console.log('Connected to Deriv WebSocket');
+        resolve();
+      });
 
-      if (response.req_id && this.callbacks.has(response.req_id)) {
-        const callback = this.callbacks.get(response.req_id);
-        callback(response);
-        this.callbacks.delete(response.req_id);
-      }
-    });
+      this.ws.on('message', (data) => {
+        const response = JSON.parse(data.toString());
 
-    this.ws.on('error', (err) => {
-      console.error('❌ WebSocket error message:', err?.message || String(err));
-      console.error('❌ WebSocket error code:', err?.code || 'none');
+        if (response.req_id && this.callbacks.has(response.req_id)) {
+          const callback = this.callbacks.get(response.req_id);
+          callback(response);
+          this.callbacks.delete(response.req_id);
+        }
+      });
 
-      reject(
-        new Error(err?.message || 'WebSocket connection failed')
-      );
-    });
-  });
-}
+      this.ws.on('error', (err) => {
+        console.error(
+          'WebSocket error:',
+          err?.message || String(err)
+        );
 
-send(request) {
-});
-});
+        reject(
+          new Error(
+            err?.message || 'WebSocket connection failed'
+          )
+        );
+      });
     });
   }
 
@@ -82,6 +81,7 @@ send(request) {
 
   subscribeTicks(symbol, callback) {
     const reqId = ++this.requestId;
+
     const request = {
       ticks: symbol,
       subscribe: 1,
@@ -90,7 +90,7 @@ send(request) {
 
     this.callbacks.set(reqId, callback);
     this.ws.send(JSON.stringify(request));
-    
+
     return reqId;
   }
 
