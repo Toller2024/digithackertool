@@ -1,12 +1,14 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useState, useEffect } from 'react';
+
+import LandingPage from './pages/LandingPage';
 import Dashboard from './pages/Dashboard';
+
+const BACKEND_URL = 'https://digithackertool-backend.onrender.com';
 
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-
-  const BACKEND_URL = 'https://digithackertool-backend.onrender.com';
 
   useEffect(() => {
     checkAuth();
@@ -14,12 +16,20 @@ function App() {
 
   const checkAuth = async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/auth/me`, {
-        credentials: 'include'
-      });
+      const response = await fetch(
+        `${BACKEND_URL}/api/auth/me`,
+        {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            'Accept': 'application/json'
+          }
+        }
+      );
 
-      if (res.ok) {
-        const data = await res.json();
+      if (response.ok) {
+        const data = await response.json();
+
         setUser(data.user || data);
       } else {
         setUser(null);
@@ -34,10 +44,16 @@ function App() {
 
   const handleLogout = async () => {
     try {
-      await fetch(`${BACKEND_URL}/api/auth/logout`, {
-        method: 'POST',
-        credentials: 'include'
-      });
+      await fetch(
+        `${BACKEND_URL}/api/auth/logout`,
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Accept': 'application/json'
+          }
+        }
+      );
     } catch (error) {
       console.error('Logout failed:', error);
     }
@@ -46,42 +62,37 @@ function App() {
   };
 
   if (loading) {
-    return <div>Loading...</div>;
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center'
+        }}
+      >
+        <p>Loading...</p>
+      </div>
+    );
   }
 
   return (
     <BrowserRouter>
       <Routes>
 
+        {/* HOME */}
         <Route
           path="/"
           element={
             user ? (
               <Navigate to="/dashboard" replace />
             ) : (
-              <Navigate to="/login" replace />
+              <LandingPage />
             )
           }
         />
 
-        <Route
-          path="/login"
-          element={
-            user ? (
-              <Navigate to="/dashboard" replace />
-            ) : (
-              <div style={{ padding: '40px', textAlign: 'center' }}>
-                <h1>Digi Hacker Tool</h1>
-                <p>Login with Deriv to continue.</p>
-
-                <a href={`${BACKEND_URL}/api/auth/deriv`}>
-                  <button>Login with Deriv</button>
-                </a>
-              </div>
-            )
-          }
-        />
-
+        {/* DASHBOARD */}
         <Route
           path="/dashboard"
           element={
@@ -91,14 +102,20 @@ function App() {
                 onLogout={handleLogout}
               />
             ) : (
-              <Navigate to="/login" replace />
+              <Navigate to="/" replace />
             )
           }
         />
 
+        {/* ANY UNKNOWN PAGE */}
         <Route
           path="*"
-          element={<Navigate to="/" replace />}
+          element={
+            <Navigate
+              to={user ? "/dashboard" : "/"}
+              replace
+            />
+          }
         />
 
       </Routes>
