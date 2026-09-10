@@ -95,8 +95,17 @@ class DerivAPI {
   }
 
   unsubscribe(reqId) {
-    this.callbacks.delete(reqId);
-    this.send({ forget: reqId });
+  this.callbacks.delete(reqId);
+
+  if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    this.send({ forget: reqId }).catch((err) => {
+      console.error(
+        '❌ WebSocket unsubscribe error:',
+        err?.message || String(err)
+      );
+    });
+  }
+}
   }
 
   disconnect() {
