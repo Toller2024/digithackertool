@@ -9,28 +9,37 @@ class DerivAPI {
   }
 
   connect() {
-    return new Promise((resolve, reject) => {
-      const wsUrl = 'wss://api.derivws.com/trading/v1/options/ws/public';
-      this.ws = new WebSocket(wsUrl);
+  return new Promise((resolve, reject) => {
+    const wsUrl = 'wss://api.derivws.com/trading/v1/options/ws/public';
+    this.ws = new WebSocket(wsUrl);
 
-      this.ws.on('open', () => {
-        console.log('✅ Connected to Deriv WebSocket');
-        resolve();
-      });
+    this.ws.on('open', () => {
+      console.log('✅ Connected to Deriv WebSocket');
+      resolve();
+    });
 
-      this.ws.on('message', (data) => {
-        const response = JSON.parse(data.toString());
-        if (response.req_id && this.callbacks.has(response.req_id)) {
-          const callback = this.callbacks.get(response.req_id);
-          callback(response);
-          this.callbacks.delete(response.req_id);
-        }
-      });
+    this.ws.on('message', (data) => {
+      const response = JSON.parse(data.toString());
 
-      this.ws.on('error', (err) => {
-  console.error('❌ WebSocket error message:', err?.message || String(err));
-  console.error('❌ WebSocket error code:', err?.code || 'none');
-  reject(new Error(err?.message || 'WebSocket connection failed'));
+      if (response.req_id && this.callbacks.has(response.req_id)) {
+        const callback = this.callbacks.get(response.req_id);
+        callback(response);
+        this.callbacks.delete(response.req_id);
+      }
+    });
+
+    this.ws.on('error', (err) => {
+      console.error('❌ WebSocket error message:', err?.message || String(err));
+      console.error('❌ WebSocket error code:', err?.code || 'none');
+
+      reject(
+        new Error(err?.message || 'WebSocket connection failed')
+      );
+    });
+  });
+}
+
+send(request) {
 });
 });
     });
