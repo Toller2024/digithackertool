@@ -97,7 +97,7 @@ class DerivAPI {
   unsubscribe(reqId) {
   this.callbacks.delete(reqId);
 
-  if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+  if (this.ws && this.ws.readyState === 1) {
     this.send({ forget: reqId }).catch((err) => {
       console.error(
         '❌ WebSocket unsubscribe error:',
@@ -106,7 +106,6 @@ class DerivAPI {
     });
   }
 }
-  }
 
   disconnect() {
     if (this.ws) {
