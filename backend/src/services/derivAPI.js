@@ -27,7 +27,10 @@ class DerivAPI {
         }
       });
 
-      this.ws.on('error', reject);
+      this.ws.on('error', (err) => {
+  console.error('❌ WebSocket error:', err);
+  reject(err);
+});
     });
   }
 
