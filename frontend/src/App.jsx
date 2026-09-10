@@ -1,15 +1,12 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useState, useEffect } from 'react';
-
-import LandingPage from './pages/LandingPage';
 import Dashboard from './pages/Dashboard';
-
-const BACKEND_URL =
-  'https://digithackertool-backend.onrender.com';
 
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  const BACKEND_URL = 'https://digithackertool-backend.onrender.com';
 
   useEffect(() => {
     checkAuth();
@@ -17,21 +14,18 @@ function App() {
 
   const checkAuth = async () => {
     try {
-      const response = await fetch(
-        `${BACKEND_URL}/api/auth/me`,
-        {
-          credentials: 'include'
-        }
-      );
+      const res = await fetch(`${BACKEND_URL}/api/auth/me`, {
+        credentials: 'include'
+      });
 
-      if (response.ok) {
-        const data = await response.json();
-        setUser(data);
+      if (res.ok) {
+        const data = await res.json();
+        setUser(data.user || data);
       } else {
         setUser(null);
       }
     } catch (error) {
-      console.error('Auth check failed:', error);
+      console.error('Authentication check failed:', error);
       setUser(null);
     } finally {
       setLoading(false);
@@ -40,13 +34,10 @@ function App() {
 
   const handleLogout = async () => {
     try {
-      await fetch(
-        `${BACKEND_URL}/api/auth/logout`,
-        {
-          method: 'POST',
-          credentials: 'include'
-        }
-      );
+      await fetch(`${BACKEND_URL}/api/auth/logout`, {
+        method: 'POST',
+        credentials: 'include'
+      });
     } catch (error) {
       console.error('Logout failed:', error);
     }
@@ -55,13 +46,7 @@ function App() {
   };
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-black text-white flex items-center justify-center">
-        <div className="text-lg">
-          Loading...
-        </div>
-      </div>
-    );
+    return <div>Loading...</div>;
   }
 
   return (
@@ -71,24 +56,49 @@ function App() {
         <Route
           path="/"
           element={
-            user
-              ? <Navigate to="/dashboard" replace />
-              : <LandingPage />
+            user ? (
+              <Navigate to="/dashboard" replace />
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
+        />
+
+        <Route
+          path="/login"
+          element={
+            user ? (
+              <Navigate to="/dashboard" replace />
+            ) : (
+              <div style={{ padding: '40px', textAlign: 'center' }}>
+                <h1>Digi Hacker Tool</h1>
+                <p>Login with Deriv to continue.</p>
+
+                <a href={`${BACKEND_URL}/api/auth/deriv`}>
+                  <button>Login with Deriv</button>
+                </a>
+              </div>
+            )
           }
         />
 
         <Route
           path="/dashboard"
           element={
-            user
-              ? (
-                <Dashboard
-                  user={user}
-                  onLogout={handleLogout}
-                />
-              )
-              : <Navigate to="/" replace />
+            user ? (
+              <Dashboard
+                user={user}
+                onLogout={handleLogout}
+              />
+            ) : (
+              <Navigate to="/login" replace />
+            )
           }
+        />
+
+        <Route
+          path="*"
+          element={<Navigate to="/" replace />}
         />
 
       </Routes>
