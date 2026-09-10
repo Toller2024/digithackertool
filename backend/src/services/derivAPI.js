@@ -10,7 +10,7 @@ class DerivAPI {
 
   connect() {
     return new Promise((resolve, reject) => {
-      const wsUrl = `${process.env.DERIV_WS_URL}${this.appId}`;
+      const wsUrl = 'wss://api.derivws.com/trading/v1/options/ws/public';
       this.ws = new WebSocket(wsUrl);
 
       this.ws.on('open', () => {
