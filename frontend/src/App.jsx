@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react';
 import LandingPage from './pages/LandingPage';
 import Dashboard from './pages/Dashboard';
 
+const API_URL = import.meta.env.VITE_API_URL.replace(/\/$/, '');
+
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -15,7 +17,7 @@ function App() {
   const checkAuth = async () => {
     try {
       const response = await fetch(
-        '/api/auth/me',
+        `${API_URL}/api/auth/me`,
         {
           method: 'GET',
           credentials: 'include',
@@ -42,7 +44,7 @@ function App() {
   const handleLogout = async () => {
     try {
       await fetch(
-        '/api/auth/logout',
+        `${API_URL}/api/auth/logout`,
         {
           method: 'POST',
           credentials: 'include',
