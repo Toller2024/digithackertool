@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
+
 import {
   analyzeDigitMatch,
-  extractLastDigits
+  getLastDigit
 } from '../utils/predictions';
 
 const SYMBOLS = [
@@ -16,108 +17,22 @@ const BACKEND_URL =
   'https://digithackertool-backend.onrender.com';
 
 const MIN_DIGITS = 30;
+const MAX_TICKS = 200;
 const COUNTDOWN_SECONDS = 5;
 
 /*
- * Extract the actual last digit from ONE Deriv tick.
- */
-function getLastDigit(tick) {
-  if (tick === null || tick === undefined) {
-    return null;
-  }
-
-  if (typeof tick === 'number') {
-    const text = String(tick);
-    const digits = text.replace(/\D/g, '');
-
-    return digits.length
-      ? Number(digits[digits.length - 1])
-      : null;
-  }
-
-  if (tick.digit !== undefined) {
-    const digit = Number(tick.digit);
-
-    if (
-      Number.isInteger(digit) &&
-      digit >= 0 &&
-      digit <= 9
-    ) {
-      return digit;
-    }
-  }
-
-  if (tick.lastDigit !== undefined) {
-    const digit = Number(tick.lastDigit);
-
-    if (
-      Number.isInteger(digit) &&
-      digit >= 0 &&
-      digit <= 9
-    ) {
-      return digit;
-    }
-  }
-
-  const value =
-    tick.quote ??
-    tick.tick ??
-    tick.price ??
-    tick.value;
-
-  if (value === undefined || value === null) {
-    return null;
-  }
-
-  const text = String(value);
-  const digits = text.replace(/\D/g, '');
-
-  return digits.length
-    ? Number(digits[digits.length - 1])
-    : null;
-}
-
-/*
- * Get prediction digit from prediction engine.
- */
-function getPredictionDigit(result) {
-  if (!result) return null;
-
-  const digit = Number(result.prediction);
-
-  if (
-    Number.isInteger(digit) &&
-    digit >= 0 &&
-    digit <= 9
-  ) {
-    return digit;
-  }
-
-  return null;
-}
-
-function getConfidence(result) {
-  if (!result) return 0;
-
-  const confidence = Number(result.confidence);
-
-  if (!Number.isFinite(confidence)) {
-    return 0;
-  }
-
-  return Math.max(
-    0,
-    Math.min(100, Math.round(confidence))
-  );
-}
-
-/*
- * We don't force a trade when the prediction engine
- * doesn't have enough evidence.
+ * This is only a display/signal threshold.
  *
- * Change this later only after measuring actual results.
+ * IMPORTANT:
+ * The percentage is a MODEL CONFIDENCE/SCORE,
+ * NOT a guaranteed probability of winning.
  */
 const MIN_SIGNAL_CONFIDENCE = 75;
+
+
+/* ============================================================
+   PREDICTION PANEL
+   ============================================================ */
 
 function PredictionPanel({
   name,
@@ -129,7 +44,8 @@ function PredictionPanel({
   confidence,
   tickCount,
   history,
-  status
+  status,
+  connected
 }) {
   const matches = history.filter(
     item => item.match
@@ -139,7 +55,9 @@ function PredictionPanel({
 
   const accuracy =
     completed > 0
-      ? Math.round((matches / completed) * 100)
+      ? Math.round(
+          (matches / completed) * 100
+        )
       : 0;
 
   return (
@@ -159,6 +77,7 @@ function PredictionPanel({
         </div>
 
         <div className="text-right">
+
           <p className="text-xs text-gray-400">
             LIVE TICKS
           </p>
@@ -166,9 +85,23 @@ function PredictionPanel({
           <p className="font-bold">
             {tickCount}
           </p>
+
+          <p className="text-xs mt-1">
+            {connected ? (
+              <span className="text-green-400">
+                ● CONNECTED
+              </span>
+            ) : (
+              <span className="text-red-400">
+                ● DISCONNECTED
+              </span>
+            )}
+          </p>
+
         </div>
 
       </div>
+
 
       {/* Countdown */}
       <div className="text-center mb-5">
@@ -182,16 +115,17 @@ function PredictionPanel({
         </div>
 
         <p className="text-xs text-gray-500 mt-2">
-          5 → 4 → 3 → 2 → 1
+          Analysis refresh countdown
         </p>
 
       </div>
+
 
       {/* Prediction */}
       <div className="rounded-xl bg-black/40 border border-blue-400/20 p-5 text-center">
 
         <p className="text-gray-400 text-sm">
-          NEXT DIGIT
+          NEXT DIGIT CANDIDATE
         </p>
 
         <div className="text-7xl font-black my-3 text-white">
@@ -202,7 +136,7 @@ function PredictionPanel({
 
         {confidence > 0 && (
           <p className="text-sm text-gray-400">
-            Model score: {confidence}%
+            Model confidence: {confidence}%
           </p>
         )}
 
@@ -216,7 +150,7 @@ function PredictionPanel({
 
           {status === 'WAIT' && (
             <span className="text-yellow-400">
-              ⚠️ NO SIGNAL — WAIT
+              ⚠️ NO STRONG SIGNAL — WAIT
             </span>
           )}
 
@@ -228,7 +162,13 @@ function PredictionPanel({
 
           {status === 'LOADING' && (
             <span className="text-gray-500">
-              Collecting tick data...
+              Collecting live tick data...
+            </span>
+          )}
+
+          {status === 'ERROR' && (
+            <span className="text-red-400">
+              ❌ STREAM ERROR
             </span>
           )}
 
@@ -236,11 +176,12 @@ function PredictionPanel({
 
       </div>
 
-      {/* Actual result */}
+
+      {/* Actual next tick */}
       <div className="mt-4 rounded-xl bg-black/30 p-4 text-center">
 
         <p className="text-gray-400 text-sm">
-          ACTUAL NEXT DIGIT
+          NEXT ACTUAL DIGIT
         </p>
 
         <div className="text-5xl font-black my-2">
@@ -263,11 +204,12 @@ function PredictionPanel({
 
         {!result && (
           <div className="text-gray-500 text-sm">
-            Waiting for the next tick...
+            Waiting for the next live tick...
           </div>
         )}
 
       </div>
+
 
       {/* Accuracy */}
       <div className="mt-4 rounded-xl bg-black/30 p-3 text-center">
@@ -288,6 +230,7 @@ function PredictionPanel({
 
       </div>
 
+
       {/* History */}
       <div className="mt-5">
 
@@ -307,7 +250,7 @@ function PredictionPanel({
 
           {history.length === 0 && (
             <p className="text-xs text-gray-500 text-center py-3">
-              Waiting for first completed prediction...
+              Waiting for prediction results...
             </p>
           )}
 
@@ -360,27 +303,65 @@ function PredictionPanel({
   );
 }
 
+
+/* ============================================================
+   DASHBOARD
+   ============================================================ */
+
 export default function Dashboard({
   user,
   onLogout
 }) {
 
-  const [tickData, setTickData] = useState({});
-  const [timers, setTimers] = useState({});
+  /*
+   * Raw live Deriv ticks.
+   *
+   * Example:
+   *
+   * {
+   *   R_10: [
+   *     tick,
+   *     tick,
+   *     tick
+   *   ]
+   * }
+   */
+  const [tickData, setTickData] =
+    useState({});
+
+
+  /*
+   * Countdown timers.
+   */
+  const [timers, setTimers] =
+    useState({});
+
+
+  /*
+   * Prediction/result state.
+   */
   const [predictionState, setPredictionState] =
     useState({});
 
-  /*
-   * Keep the latest tick count outside the React
-   * render cycle so we know exactly which tick a
-   * prediction was based on.
-   */
-  const tickCounts = useRef({});
 
   /*
-   * =====================================================
-   * 5 SECOND COUNTDOWN
-   * =====================================================
+   * Connection status.
+   */
+  const [connectionState, setConnectionState] =
+    useState({});
+
+
+  /*
+   * Keep EventSource objects outside React state.
+   */
+  const eventSources =
+    useRef({});
+
+
+  /*
+   * ==========================================================
+   * COUNTDOWN
+   * ==========================================================
    */
 
   useEffect(() => {
@@ -388,49 +369,201 @@ export default function Dashboard({
     const initial = {};
 
     SYMBOLS.forEach(({ symbol }) => {
-      initial[symbol] = COUNTDOWN_SECONDS;
+      initial[symbol] =
+        COUNTDOWN_SECONDS;
     });
 
     setTimers(initial);
 
-    const interval = setInterval(() => {
 
-      setTimers(prev => {
+    const interval =
+      setInterval(() => {
 
-        const next = { ...prev };
+        setTimers(prev => {
 
-        SYMBOLS.forEach(({ symbol }) => {
+          const next = {
+            ...prev
+          };
 
-          const current =
-            prev[symbol] ??
-            COUNTDOWN_SECONDS;
+          SYMBOLS.forEach(({ symbol }) => {
 
-          next[symbol] =
-            current <= 1
-              ? COUNTDOWN_SECONDS
-              : current - 1;
+            const current =
+              prev[symbol] ??
+              COUNTDOWN_SECONDS;
+
+            next[symbol] =
+              current <= 1
+                ? COUNTDOWN_SECONDS
+                : current - 1;
+
+          });
+
+          return next;
 
         });
 
-        return next;
+      }, 1000);
 
-      });
 
-    }, 1000);
-
-    return () => clearInterval(interval);
+    return () =>
+      clearInterval(interval);
 
   }, []);
 
+
   /*
-   * =====================================================
-   * CREATE NEW PREDICTION
-   * =====================================================
+   * ==========================================================
+   * LIVE DERIV TICK STREAM
+   * ==========================================================
+   */
+
+  useEffect(() => {
+
+    SYMBOLS.forEach(({ symbol }) => {
+
+      const streamUrl =
+        `${BACKEND_URL}/ticks/stream/${symbol}`;
+
+
+      console.log(
+        `[${symbol}] Connecting to:`,
+        streamUrl
+      );
+
+
+      const es =
+        new EventSource(streamUrl);
+
+
+      eventSources.current[symbol] =
+        es;
+
+
+      /*
+       * Connected.
+       */
+      es.onopen = () => {
+
+        console.log(
+          `[${symbol}] Tick stream connected`
+        );
+
+        setConnectionState(prev => ({
+          ...prev,
+          [symbol]: true
+        }));
+
+      };
+
+
+      /*
+       * New live tick.
+       */
+      es.onmessage = event => {
+
+        try {
+
+          const tick =
+            JSON.parse(event.data);
+
+
+          console.log(
+            `[${symbol}] Tick:`,
+            tick
+          );
+
+
+          /*
+           * Add the real tick to history.
+           */
+          setTickData(prev => {
+
+            const existing =
+              prev[symbol] || [];
+
+
+            const updated = [
+              ...existing,
+              tick
+            ].slice(-MAX_TICKS);
+
+
+            return {
+              ...prev,
+              [symbol]: updated
+            };
+
+          });
+
+
+        } catch (error) {
+
+          console.error(
+            `[${symbol}] Invalid tick data:`,
+            error
+          );
+
+        }
+
+      };
+
+
+      /*
+       * Stream error.
+       */
+      es.onerror = error => {
+
+        console.error(
+          `[${symbol}] Tick stream error:`,
+          error
+        );
+
+        setConnectionState(prev => ({
+          ...prev,
+          [symbol]: false
+        }));
+
+      };
+
+    });
+
+
+    /*
+     * Cleanup.
+     */
+    return () => {
+
+      Object.values(
+        eventSources.current
+      ).forEach(es => {
+
+        try {
+          es.close();
+        } catch {
+          // Ignore cleanup errors.
+        }
+
+      });
+
+      eventSources.current = {};
+
+    };
+
+  }, []);
+
+
+  /*
+   * ==========================================================
+   * PREDICTION ENGINE
+   * ==========================================================
    *
-   * A prediction is based ONLY on ticks that already
-   * existed before the prediction.
+   * IMPORTANT:
    *
-   * The next incoming tick is then the result.
+   * We create a prediction from the existing history.
+   *
+   * We then wait for ONE NEW LIVE TICK.
+   *
+   * That new tick becomes the result.
    */
 
   useEffect(() => {
@@ -440,62 +573,116 @@ export default function Dashboard({
       const ticks =
         tickData[symbol] || [];
 
-      if (ticks.length < MIN_DIGITS) {
-        return;
-      }
-
-      const currentState =
-        predictionState[symbol];
 
       /*
-       * Don't create a new prediction if there is
-       * already one waiting for its next tick.
+       * Need enough live ticks first.
        */
       if (
-        currentState &&
-        currentState.waitingForResult
+        ticks.length <
+        MIN_DIGITS
       ) {
+
+        setPredictionState(prev => ({
+
+          ...prev,
+
+          [symbol]: {
+
+            ...(prev[symbol] || {}),
+
+            status: 'LOADING',
+
+            predicted: null,
+
+            confidence: 0
+
+          }
+
+        }));
+
         return;
+
       }
+
+
+      const current =
+        predictionState[symbol];
+
 
       /*
-       * Convert raw Deriv ticks into actual digits.
-       *
-       * THIS IS THE IMPORTANT FIX.
+       * If we already have a prediction waiting
+       * for its result, don't create another one.
        */
-      const digits =
-        extractLastDigits(ticks);
+      if (
+        current?.waitingForResult
+      ) {
 
-      if (digits.length < MIN_DIGITS) {
         return;
+
       }
 
+
+      /*
+       * Analyse the ACTUAL live ticks.
+       */
       const analysis =
-        analyzeDigitMatch(digits);
+        analyzeDigitMatch(ticks);
+
 
       const predicted =
-        getPredictionDigit(analysis);
+        Number(analysis?.prediction);
+
 
       const confidence =
-        getConfidence(analysis);
+        Number(analysis?.confidence);
 
-      if (predicted === null) {
+
+      /*
+       * Validate prediction.
+       */
+      const validPrediction =
+        Number.isInteger(predicted) &&
+        predicted >= 0 &&
+        predicted <= 9;
+
+
+      if (!validPrediction) {
+
         return;
+
       }
 
-      /*
-       * Only create a signal when the model reaches
-       * the configured threshold.
-       */
-      const hasStrongSignal =
-        confidence >= MIN_SIGNAL_CONFIDENCE;
 
       /*
-       * Remember exactly how many ticks existed when
-       * this prediction was created.
+       * Validate confidence.
+       */
+      const safeConfidence =
+        Number.isFinite(confidence)
+          ? Math.max(
+              0,
+              Math.min(
+                100,
+                Math.round(confidence)
+              )
+            )
+          : 0;
+
+
+      /*
+       * Strong enough to display as a signal?
+       */
+      const strongSignal =
+        safeConfidence >=
+        MIN_SIGNAL_CONFIDENCE;
+
+
+      /*
+       * Record the exact number of ticks used
+       * for this analysis.
        */
       const predictionTickCount =
         ticks.length;
+
 
       setPredictionState(prev => ({
 
@@ -503,29 +690,42 @@ export default function Dashboard({
 
         [symbol]: {
 
+          /*
+           * Only expose the prediction as a SIGNAL
+           * when confidence passes the threshold.
+           */
           predicted:
-            hasStrongSignal
+            strongSignal
               ? predicted
               : null,
 
+
+          confidence:
+            safeConfidence,
+
+
           actual: null,
+
 
           result: null,
 
-          confidence,
-
-          waitingForResult:
-            hasStrongSignal,
-
-          predictionTickCount,
 
           status:
-            hasStrongSignal
+            strongSignal
               ? 'SIGNAL'
               : 'WAIT',
 
+
+          waitingForResult:
+            strongSignal,
+
+
+          predictionTickCount,
+
+
           history:
-            prev[symbol]?.history || []
+            prev[symbol]?.history ||
+            []
 
         }
 
@@ -535,201 +735,153 @@ export default function Dashboard({
 
   }, [tickData, predictionState]);
 
+
   /*
-   * =====================================================
-   * LIVE DERIV STREAMS
-   * =====================================================
+   * ==========================================================
+   * DETECT THE NEXT TICK AND SCORE THE PREDICTION
+   * ==========================================================
+   *
+   * This separate effect watches for a new tick after a
+   * prediction was created.
    */
 
   useEffect(() => {
 
-    const eventSources = {};
-
     SYMBOLS.forEach(({ symbol }) => {
 
-      const streamUrl =
-        `${BACKEND_URL}/ticks/stream/${symbol}`;
+      const ticks =
+        tickData[symbol] || [];
 
-      console.log(
-        `Connecting to tick stream: ${streamUrl}`
-      );
 
-      const es =
-        new EventSource(streamUrl);
+      const current =
+        predictionState[symbol];
 
-      es.onopen = () => {
 
-        console.log(
-          `Tick stream connected: ${symbol}`
-        );
+      if (
+        !current ||
+        !current.waitingForResult
+      ) {
+
+        return;
+
+      }
+
+
+      /*
+       * We need at least one tick after the prediction.
+       */
+      if (
+        ticks.length <=
+        current.predictionTickCount
+      ) {
+
+        return;
+
+      }
+
+
+      /*
+       * Get the newest REAL Deriv tick.
+       */
+      const latestTick =
+        ticks[ticks.length - 1];
+
+
+      const actual =
+        getLastDigit(latestTick);
+
+
+      if (
+        actual === null ||
+        actual === undefined
+      ) {
+
+        return;
+
+      }
+
+
+      /*
+       * Compare the model prediction with the
+       * actual next tick digit.
+       */
+      const match =
+        Number(current.predicted) ===
+        Number(actual);
+
+
+      const historyItem = {
+
+        predicted:
+          current.predicted,
+
+        actual,
+
+        match,
+
+        time:
+          Date.now()
 
       };
 
-      es.onmessage = (event) => {
 
-        try {
+      const history = [
 
-          const tick =
-            JSON.parse(event.data);
+        historyItem,
 
-          /*
-           * Get actual digit from THIS tick.
-           */
-          const actual =
-            getLastDigit(tick);
+        ...(current.history || [])
 
-          /*
-           * Update tick history.
-           */
-          setTickData(prev => {
+      ].slice(0, 10);
 
-            const previous =
-              prev[symbol] || [];
 
-            const updated = [
-              ...previous,
-              tick
-            ].slice(-200);
+      /*
+       * Store result.
+       */
+      setPredictionState(prev => ({
 
-            tickCounts.current[symbol] =
-              updated.length;
+        ...prev,
 
-            return {
-              ...prev,
-              [symbol]: updated
-            };
+        [symbol]: {
 
-          });
+          ...prev[symbol],
 
-          if (actual === null) {
-            return;
-          }
+          actual,
 
-          /*
-           * Check whether there is a prediction waiting
-           * for the NEXT tick.
-           */
-          setPredictionState(prev => {
+          result:
+            match
+              ? 'MATCH'
+              : 'MISS',
 
-            const current =
-              prev[symbol];
+          waitingForResult:
+            false,
 
-            if (!current) {
-              return prev;
-            }
+          status:
+            'RESULT',
 
-            if (!current.waitingForResult) {
-              return prev;
-            }
-
-            /*
-             * The prediction was based on N ticks.
-             *
-             * We need a tick AFTER those N ticks.
-             *
-             * The newly received tick is exactly that
-             * result tick.
-             */
-            const currentTickCount =
-              tickCounts.current[symbol] || 0;
-
-            if (
-              currentTickCount <=
-              current.predictionTickCount
-            ) {
-              return prev;
-            }
-
-            const match =
-              Number(current.predicted) ===
-              Number(actual);
-
-            const historyItem = {
-
-              predicted:
-                current.predicted,
-
-              actual,
-
-              match,
-
-              time: Date.now()
-
-            };
-
-            const history = [
-
-              historyItem,
-
-              ...(current.history || [])
-
-            ].slice(0, 10);
-
-            return {
-
-              ...prev,
-
-              [symbol]: {
-
-                ...current,
-
-                actual,
-
-                result:
-                  match
-                    ? 'MATCH'
-                    : 'MISS',
-
-                waitingForResult: false,
-
-                status: 'RESULT',
-
-                history
-
-              }
-
-            };
-
-          });
-
-        } catch (error) {
-
-          console.error(
-            `Invalid tick data for ${symbol}:`,
-            error
-          );
+          history
 
         }
 
-      };
-
-      es.onerror = (error) => {
-
-        console.error(
-          `Tick stream error for ${symbol}:`,
-          error
-        );
-
-      };
-
-      eventSources[symbol] = es;
+      }));
 
     });
 
-    return () => {
+  }, [tickData, predictionState]);
 
-      Object.values(eventSources)
-        .forEach(es => es.close());
 
-    };
-
-  }, []);
+  /*
+   * ==========================================================
+   * RENDER
+   * ==========================================================
+   */
 
   return (
 
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-800 text-white">
 
+
       {/* Header */}
+
       <header className="border-b border-white/10 bg-black/20 backdrop-blur-xl">
 
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
@@ -738,11 +890,13 @@ export default function Dashboard({
             Digit Hacker Tool
           </h1>
 
+
           <div className="flex items-center gap-4">
 
             <span className="text-sm text-gray-400">
               {user?.email}
             </span>
+
 
             <button
               onClick={onLogout}
@@ -757,29 +911,46 @@ export default function Dashboard({
 
       </header>
 
+
       {/* Main */}
-      <div className="container mx-auto px-4 py-8">
+
+      <main className="container mx-auto px-4 py-8">
 
         <h2 className="text-3xl font-bold mb-2 text-center">
           Digit Match Predictions
         </h2>
 
+
         <p className="text-center text-gray-400 mb-8">
-          Next-digit analysis • 5-second alert
+          Live Deriv tick analysis
         </p>
+
+
+        <div className="mb-8 rounded-xl border border-yellow-400/20 bg-yellow-400/5 p-4 text-center">
+
+          <p className="text-sm text-yellow-300">
+            ⚠️ Predictions are statistical candidates based on
+            observed live ticks. They are not guaranteed outcomes.
+          </p>
+
+        </div>
+
 
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
 
           {SYMBOLS.map(({ symbol, name }) => {
 
             const state =
-              predictionState[symbol] || {};
+              predictionState[symbol] ||
+              {};
 
             return (
 
               <PredictionPanel
                 key={symbol}
+
                 name={name}
+
                 symbol={symbol}
 
                 timer={
@@ -826,6 +997,12 @@ export default function Dashboard({
                       : 'WAIT'
                   )
                 }
+
+                connected={
+                  connectionState[symbol] ||
+                  false
+                }
+
               />
 
             );
@@ -834,7 +1011,7 @@ export default function Dashboard({
 
         </div>
 
-      </div>
+      </main>
 
     </div>
 
