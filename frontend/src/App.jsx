@@ -1,51 +1,58 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useState, useEffect } from 'react';
+
 import LandingPage from './pages/LandingPage';
 import Dashboard from './pages/Dashboard';
-const API_URL = 'https://digithackertool-backend.onrender.com';
+
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const checkAuth = async () => {
-    try {
-      const response = await fetch(`${API_URL}/api/auth/me`, {
-        method: 'GET',
-        credentials: 'include',
-        headers: {
-          Accept: 'application/json'
-        }
-      });
-      if (response.ok) {
+
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const response = await fetch('/api/auth/me', {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            Accept: 'application/json'
+          }
+        });
+
         const data = await response.json();
-        if (data.authenticated && data.user) {
-          setUser(data.user);
+
+        console.log('AUTH STATUS:', response.status);
+        console.log('AUTH DATA:', data);
+
+        if (response.ok && data?._id) {
+          setUser(data);
         } else {
           setUser(null);
         }
-      } else {
+      } catch (error) {
+        console.error('Authentication check failed:', error);
         setUser(null);
+      } finally {
+        setLoading(false);
       }
-    } catch (error) {
-      console.error('Authentication check failed:', error);
-      setUser(null);
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
+
+    checkAuth();
+  }, []);
+
   const handleLogout = async () => {
     try {
-      await fetch(`${API_URL}/api/auth/logout`, {
+      await fetch('/api/auth/logout', {
         method: 'POST',
         credentials: 'include'
       });
     } catch (error) {
       console.error('Logout failed:', error);
     }
+
     setUser(null);
   };
-  useEffect(() => {
-    checkAuth();
-  }, []);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-black text-white flex items-center justify-center">
@@ -53,6 +60,7 @@ function App() {
       </div>
     );
   }
+
   return (
     <BrowserRouter>
       <Routes>
@@ -66,6 +74,7 @@ function App() {
             )
           }
         />
+
         <Route
           path="/dashboard"
           element={
@@ -79,12 +88,9 @@ function App() {
             )
           }
         />
-        <Route
-          path="*"
-          element={<Navigate to="/" replace />}
-        />
       </Routes>
     </BrowserRouter>
   );
 }
+
 export default App;
