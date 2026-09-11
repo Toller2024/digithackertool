@@ -1,375 +1,627 @@
 // frontend/src/utils/predictions.js
 
-/**
- * Digit Match NEXT prediction engine
- *
- * Input:
- *   digits = [0, 3, 7, 7, 1, ...]
- *
- * Returns:
- * {
- *   prediction: 0-9,
- *   confidence: 0-100,
- *   signal: "STRONG" | "MEDIUM" | "WEAK" | "WAIT",
- *   sampleSize: number
- * }
- *
- * This predicts the NEXT digit. It does not guarantee the outcome.
- */
-
 const MIN_HISTORY = 30;
 const MAX_HISTORY = 200;
 
-function cleanDigits(input) {
-  if (!Array.isArray(input)) return [];
 
-  return input
-    .map(Number)
-    .filter((n) => Number.isInteger(n) && n >= 0 && n <= 9);
-}
+/* -------------------------------------------------------
+   Extract the last digit from a tick/value
+------------------------------------------------------- */
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-/**
- * Recency weighting.
- * Newer ticks receive more weight than older ticks.
- */
-function recencyScore(digits) {
-  const scores = Array(10).fill(0);
-  const n = digits.length;
-
-  digits.forEach((digit, index) => {
-    const age = n - index;
-    const weight = Math.exp(-age / 35);
-    scores[digit] += weight;
-  });
-
-  return scores;
-}
-
-/**
- * Frequency in different windows.
- */
-function windowScores(digits) {
-  const scores = Array(10).fill(0);
-
-  const windows = [
-    { size: 20, weight: 0.50 },
-    { size: 50, weight: 0.30 },
-    { size: 100, weight: 0.20 },
-  ];
-
-  windows.forEach(({ size, weight }) => {
-    const window = digits.slice(-size);
-
-    if (!window.length) return;
-
-    const counts = Array(10).fill(0);
-
-    window.forEach((digit) => {
-      counts[digit]++;
-    });
-
-    window.forEach((_, index) => {
-      // normalized frequency
-      for (let digit = 0; digit <= 9; digit++) {
-        scores[digit] +=
-          (counts[digit] / window.length) * weight;
-      }
-    });
-  });
-
-  return scores;
-}
-
-/**
- * How long each digit has been absent.
- *
- * Absence is only a small signal. We deliberately do NOT
- * assume that an absent digit must appear next.
- */
-function absenceScore(digits) {
-  const scores = Array(10).fill(0);
-
-  for (let digit = 0; digit <= 9; digit++) {
-    let distance = 0;
-
-    for (let i = digits.length - 1; i >= 0; i--) {
-      if (digits[i] === digit) {
-        break;
-      }
-
-      distance++;
-    }
-
-    scores[digit] = Math.min(distance / 30, 1);
+function getLastDigit(value) {
+  if (value === null || value === undefined) {
+    return null;
   }
 
+  // Already a digit
+  if (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 9
+  ) {
+    return value;
+  }
+
+  // Tick object
+  if (typeof value === 'object') {
+    if (value.digit !== undefined) {
+      const digit = Number(value.digit);
+
+      if (
+        Number.isInteger(digit) &&
+        digit >= 0 &&
+        digit <= 9
+      ) {
+        return digit;
+      }
+    }
+
+    if (value.lastDigit !== undefined) {
+      const digit = Number(value.lastDigit);
+
+      if (
+        Number.isInteger(digit) &&
+        digit >= 0 &&
+        digit <= 9
+      ) {
+        return digit;
+      }
+    }
+
+    value =
+      value.quote ??
+      value.price ??
+      value.tick ??
+      value.value;
+  }
+
+  const text = String(value);
+
+  /*
+    Remove decimal point and other characters,
+    then take the final numerical digit.
+  */
+  const digits = text.replace(/\D/g, '');
+
+  if (!digits.length) {
+    return null;
+  }
+
+  return Number(digits[digits.length - 1]);
+}
+
+
+/* -------------------------------------------------------
+   Convert raw ticks into clean digits
+------------------------------------------------------- */
+
+export function extractLastDigits(ticks) {
+  if (!Array.isArray(ticks)) {
+    return [];
+  }
+
+  return ticks
+    .map(getLastDigit)
+    .filter(
+      digit =>
+        Number.isInteger(digit) &&
+        digit >= 0 &&
+        digit <= 9
+    )
+    .slice(-MAX_HISTORY);
+}
+
+
+/* -------------------------------------------------------
+   Frequency calculation
+------------------------------------------------------- */
+
+function getFrequency(digits) {
+  const frequency = Array(10).fill(0);
+
+  digits.forEach(digit => {
+    if (
+      Number.isInteger(digit) &&
+      digit >= 0 &&
+      digit <= 9
+    ) {
+      frequency[digit]++;
+    }
+  });
+
+  return frequency;
+}
+
+
+/* -------------------------------------------------------
+   Recency score
+------------------------------------------------------- */
+
+function getRecencyScores(digits) {
+  const scores = Array(10).fill(0);
+
+  const recent = digits.slice(-30);
+
+  recent.forEach((digit, index) => {
+    if (
+      Number.isInteger(digit) &&
+      digit >= 0 &&
+      digit <= 9
+    ) {
+      /*
+        More recent digits receive more weight.
+      */
+      const weight = index + 1;
+
+      scores[digit] += weight;
+    }
+  });
+
   return scores;
 }
 
-/**
- * Transition model:
- *
- * Which digit historically followed the current digit?
- */
-function transitionScores(digits) {
+
+/* -------------------------------------------------------
+   Transition score
+
+   Looks at what digits commonly appear after
+   the latest digit.
+------------------------------------------------------- */
+
+function getTransitionScores(digits) {
   const scores = Array(10).fill(0);
 
-  if (digits.length < 2) return scores;
+  if (digits.length < 2) {
+    return scores;
+  }
 
-  const lastDigit = digits[digits.length - 1];
-
-  let total = 0;
+  const latestDigit =
+    digits[digits.length - 1];
 
   for (let i = 0; i < digits.length - 1; i++) {
-    if (digits[i] === lastDigit) {
-      const nextDigit = digits[i + 1];
+    if (digits[i] === latestDigit) {
+      const next = digits[i + 1];
 
-      // Recent transitions receive more weight.
-      const age = digits.length - i;
-      const weight = Math.exp(-age / 60);
-
-      scores[nextDigit] += weight;
-      total += weight;
-    }
-  }
-
-  if (total > 0) {
-    for (let digit = 0; digit <= 9; digit++) {
-      scores[digit] /= total;
+      if (
+        Number.isInteger(next) &&
+        next >= 0 &&
+        next <= 9
+      ) {
+        scores[next]++;
+      }
     }
   }
 
   return scores;
 }
 
-/**
- * Pair/sequence transition:
- *
- * Looks at the last two digits and checks what historically
- * followed the same pair.
- */
-function pairTransitionScores(digits) {
+
+/* -------------------------------------------------------
+   Pair transition
+
+   Looks at the last two digits and what historically
+   followed similar pairs.
+------------------------------------------------------- */
+
+function getPairTransitionScores(digits) {
   const scores = Array(10).fill(0);
 
-  if (digits.length < 3) return scores;
+  if (digits.length < 3) {
+    return scores;
+  }
 
-  const a = digits[digits.length - 2];
-  const b = digits[digits.length - 1];
+  const a =
+    digits[digits.length - 2];
 
-  let total = 0;
+  const b =
+    digits[digits.length - 1];
 
   for (let i = 0; i < digits.length - 2; i++) {
-    if (digits[i] === a && digits[i + 1] === b) {
-      const nextDigit = digits[i + 2];
+    if (
+      digits[i] === a &&
+      digits[i + 1] === b
+    ) {
+      const next =
+        digits[i + 2];
 
-      const age = digits.length - i;
-      const weight = Math.exp(-age / 80);
-
-      scores[nextDigit] += weight;
-      total += weight;
-    }
-  }
-
-  if (total > 0) {
-    for (let digit = 0; digit <= 9; digit++) {
-      scores[digit] /= total;
+      if (
+        Number.isInteger(next) &&
+        next >= 0 &&
+        next <= 9
+      ) {
+        scores[next]++;
+      }
     }
   }
 
   return scores;
 }
 
-/**
- * Recent run behavior.
- */
-function runScore(digits) {
+
+/* -------------------------------------------------------
+   Run analysis
+
+   Detects whether a digit has appeared repeatedly.
+------------------------------------------------------- */
+
+function getRunScores(digits) {
   const scores = Array(10).fill(0);
 
-  if (!digits.length) return scores;
+  if (!digits.length) {
+    return scores;
+  }
 
-  const last = digits[digits.length - 1];
+  const last =
+    digits[digits.length - 1];
 
-  let run = 0;
+  let runLength = 1;
 
-  for (let i = digits.length - 1; i >= 0; i--) {
+  for (
+    let i = digits.length - 2;
+    i >= 0;
+    i--
+  ) {
     if (digits[i] === last) {
-      run++;
+      runLength++;
     } else {
       break;
     }
   }
 
-  // A small counter-pressure against blindly predicting
-  // the same digit after an unusually long run.
-  if (run >= 3) {
+  /*
+    We don't blindly assume that a run will continue.
+    Instead we give a small score to other digits when
+    a long run is detected.
+  */
+
+  if (runLength >= 3) {
     for (let digit = 0; digit <= 9; digit++) {
-      scores[digit] = digit === last ? -0.08 : 0.01;
+      if (digit !== last) {
+        scores[digit] += runLength;
+      }
     }
   }
 
   return scores;
 }
 
-function normalize(scores) {
-  const min = Math.min(...scores);
-  const max = Math.max(...scores);
 
-  if (max === min) {
-    return scores.map(() => 0.5);
+/* -------------------------------------------------------
+   Absence score
+
+   Gives some weight to digits that have been absent
+   from the recent window.
+
+   IMPORTANT:
+   This does NOT mean an absent digit is guaranteed
+   to appear next.
+------------------------------------------------------- */
+
+function getAbsenceScores(digits) {
+  const scores = Array(10).fill(0);
+
+  const recent =
+    digits.slice(-50);
+
+  const lastSeen =
+    Array(10).fill(-1);
+
+  recent.forEach((digit, index) => {
+    if (
+      Number.isInteger(digit) &&
+      digit >= 0 &&
+      digit <= 9
+    ) {
+      lastSeen[digit] = index;
+    }
+  });
+
+  for (let digit = 0; digit <= 9; digit++) {
+    if (lastSeen[digit] === -1) {
+      scores[digit] = recent.length;
+    } else {
+      scores[digit] =
+        recent.length -
+        lastSeen[digit];
+    }
   }
 
-  return scores.map((value) => (value - min) / (max - min));
+  return scores;
 }
 
-/**
- * Main Digit Match predictor.
- */
-export function analyzeDigitMatch(inputDigits) {
-  let digits = cleanDigits(inputDigits);
 
-  if (digits.length > MAX_HISTORY) {
-    digits = digits.slice(-MAX_HISTORY);
+/* -------------------------------------------------------
+   Normalize an array to 0–100
+------------------------------------------------------- */
+
+function normalizeScores(scores) {
+  const max =
+    Math.max(...scores);
+
+  const min =
+    Math.min(...scores);
+
+  if (
+    !Number.isFinite(max) ||
+    max === min
+  ) {
+    return Array(10).fill(50);
   }
 
+  return scores.map(value =>
+    ((value - min) /
+      (max - min)) *
+    100
+  );
+}
+
+
+/* -------------------------------------------------------
+   Main Digit Match analyzer
+------------------------------------------------------- */
+
+export function analyzeDigitMatch(inputDigits) {
+  const digits =
+    Array.isArray(inputDigits)
+      ? inputDigits
+          .map(getLastDigit)
+          .filter(
+            digit =>
+              Number.isInteger(digit) &&
+              digit >= 0 &&
+              digit <= 9
+          )
+          .slice(-MAX_HISTORY)
+      : [];
+
+
+  /*
+    Not enough data.
+  */
   if (digits.length < MIN_HISTORY) {
     return {
       prediction: null,
       confidence: 0,
-      signal: "WAIT",
-      sampleSize: digits.length,
-      message: `Collecting data: ${MIN_HISTORY - digits.length} more ticks needed`,
+      status: 'WAIT',
+      reason:
+        `Need at least ${MIN_HISTORY} digits`,
+      historyLength: digits.length
     };
   }
 
-  const recent = normalize(recencyScore(digits));
-  const frequency = normalize(windowScores(digits));
-  const absence = normalize(absenceScore(digits));
-  const transition = normalize(transitionScores(digits));
-  const pairTransition = normalize(pairTransitionScores(digits));
-  const run = runScore(digits);
 
-  const finalScores = Array(10).fill(0);
+  /* ---------------------------------------------
+     Individual model components
+  --------------------------------------------- */
+
+  const frequency =
+    getFrequency(digits);
+
+  const recency =
+    getRecencyScores(digits);
+
+  const transition =
+    getTransitionScores(digits);
+
+  const pairTransition =
+    getPairTransitionScores(digits);
+
+  const run =
+    getRunScores(digits);
+
+  const absence =
+    getAbsenceScores(digits);
+
+
+  /* ---------------------------------------------
+     Normalize components
+  --------------------------------------------- */
+
+  const frequencyN =
+    normalizeScores(frequency);
+
+  const recencyN =
+    normalizeScores(recency);
+
+  const transitionN =
+    normalizeScores(transition);
+
+  const pairTransitionN =
+    normalizeScores(pairTransition);
+
+  const runN =
+    normalizeScores(run);
+
+  const absenceN =
+    normalizeScores(absence);
+
+
+  /* ---------------------------------------------
+     Combined score
+
+     These weights are model heuristics.
+     They are NOT mathematical probabilities.
+  --------------------------------------------- */
+
+  const scores =
+    Array(10).fill(0);
 
   for (let digit = 0; digit <= 9; digit++) {
-    finalScores[digit] =
-      recent[digit] * 0.20 +
-      frequency[digit] * 0.15 +
-      absence[digit] * 0.10 +
-      transition[digit] * 0.25 +
-      pairTransition[digit] * 0.25 +
-      run[digit];
+    scores[digit] =
+      (frequencyN[digit] * 0.20) +
+      (recencyN[digit] * 0.20) +
+      (transitionN[digit] * 0.25) +
+      (pairTransitionN[digit] * 0.20) +
+      (runN[digit] * 0.05) +
+      (absenceN[digit] * 0.10);
   }
 
-  /**
-   * Add a tiny deterministic tie-breaker based on the latest
-   * digit so equal scores don't constantly favor digit 0.
-   */
-  const latest = digits[digits.length - 1];
 
-  for (let digit = 0; digit <= 9; digit++) {
-    const distance = Math.abs(digit - latest);
-    finalScores[digit] += (10 - distance) * 0.000001;
+  /* ---------------------------------------------
+     Find highest and second-highest candidates
+  --------------------------------------------- */
+
+  const ranked =
+    scores
+      .map((score, digit) => ({
+        digit,
+        score
+      }))
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
+
+
+  const best =
+    ranked[0];
+
+  const second =
+    ranked[1];
+
+
+  if (!best) {
+    return {
+      prediction: null,
+      confidence: 0,
+      status: 'WAIT',
+      reason: 'No usable signal',
+      historyLength: digits.length
+    };
   }
 
-  const ranked = finalScores
-    .map((score, digit) => ({
-      digit,
-      score,
-    }))
-    .sort((a, b) => b.score - a.score);
 
-  const best = ranked[0];
-  const second = ranked[1];
+  /* ---------------------------------------------
+     Calculate model confidence
 
-  /**
-   * Convert model separation into a confidence score.
-   * This is model confidence, NOT probability of guaranteed success.
-   */
-  const separation =
-    best.score - second.score;
+     This measures separation between the top
+     candidates. It is NOT a true probability.
+  --------------------------------------------- */
 
-  const confidence = clamp(
-    Math.round(50 + separation * 100),
-    1,
-    95
-  );
+  const spread =
+    Math.max(
+      0,
+      best.score -
+        second.score
+    );
 
-  let signal = "WEAK";
 
-  if (confidence >= 75) {
-    signal = "STRONG";
-  } else if (confidence >= 60) {
-    signal = "MEDIUM";
+  let confidence =
+    50 + (spread * 1.5);
+
+
+  /*
+    Small adjustment for amount of history.
+  */
+  if (digits.length >= 100) {
+    confidence += 3;
+  } else if (digits.length >= 60) {
+    confidence += 2;
   }
+
+
+  confidence =
+    Math.round(
+      Math.max(
+        0,
+        Math.min(
+          100,
+          confidence
+        )
+      )
+    );
+
+
+  /* ---------------------------------------------
+     Signal quality checks
+  --------------------------------------------- */
+
+  const latest =
+    digits[digits.length - 1];
+
+  const recent =
+    digits.slice(-20);
+
+  const recentFrequency =
+    getFrequency(recent);
+
+  const bestRecentCount =
+    recentFrequency[
+      best.digit
+    ];
+
+
+  /*
+    If the top candidate is not meaningfully
+    separated from the next candidate, treat
+    it as a weak signal.
+  */
+  const strongSeparation =
+    spread >= 5;
+
+
+  /*
+    Avoid treating extremely weak candidates
+    as strong predictions.
+  */
+  const usableSignal =
+    strongSeparation &&
+    confidence >= 50;
+
 
   return {
-    prediction: best.digit,
+    prediction:
+      usableSignal
+        ? best.digit
+        : null,
+
     confidence,
-    signal,
-    sampleSize: digits.length,
-    scores: ranked.map((item) => ({
-      digit: item.digit,
-      score: Number(item.score.toFixed(4)),
-    })),
+
+    status:
+      usableSignal
+        ? 'SIGNAL'
+        : 'WAIT',
+
     latestDigit: latest,
+
+    historyLength:
+      digits.length,
+
+    score:
+      Number(best.score.toFixed(2)),
+
+    secondScore:
+      Number(
+        second.score.toFixed(2)
+      ),
+
+    spread:
+      Number(
+        spread.toFixed(2)
+      ),
+
+    recentFrequency:
+      bestRecentCount,
+
+    candidates:
+      ranked.slice(0, 5),
+
+    reason:
+      usableSignal
+        ? 'Combined digit analysis'
+        : 'Weak separation between candidates'
   };
 }
 
-/**
- * Helper for when the dashboard stores tick objects instead
- * of raw digits.
- *
- * Supports:
- *   { digit: 7 }
- *   { lastDigit: 7 }
- *   { quote: 123.47 }
- *   { tick: 123.47 }
- */
-export function extractLastDigits(ticks) {
-  if (!Array.isArray(ticks)) return [];
 
-  return ticks
-    .map((tick) => {
-      if (typeof tick === "number") {
-        return Math.abs(Math.floor(tick * 10)) % 10;
-      }
+/* -------------------------------------------------------
+   Optional helper for testing/debugging
+------------------------------------------------------- */
 
-      if (tick && Number.isInteger(Number(tick.digit))) {
-        return Number(tick.digit);
-      }
+export function getDigitFrequency(digits) {
+  const clean =
+    Array.isArray(digits)
+      ? digits
+          .map(getLastDigit)
+          .filter(
+            digit =>
+              Number.isInteger(digit) &&
+              digit >= 0 &&
+              digit <= 9
+          )
+      : [];
 
-      if (tick && Number.isInteger(Number(tick.lastDigit))) {
-        return Number(tick.lastDigit);
-      }
-
-      const value =
-        tick?.quote ??
-        tick?.tick ??
-        tick?.price ??
-        tick?.value;
-
-      if (value === undefined || value === null) {
-        return null;
-      }
-
-      const stringValue = String(value);
-
-      const digitsOnly = stringValue.replace(/\D/g, "");
-
-      if (!digitsOnly.length) return null;
-
-      return Number(digitsOnly[digitsOnly.length - 1]);
-    })
-    .filter(
-      (digit) =>
-        Number.isInteger(digit) &&
-        digit >= 0 &&
-        digit <= 9
-    );
+  return getFrequency(clean);
 }
 
-export default analyzeDigitMatch;
+
+/* -------------------------------------------------------
+   Default export
+------------------------------------------------------- */
+
+export default {
+  analyzeDigitMatch,
+  extractLastDigits,
+  getDigitFrequency
+};
