@@ -1,432 +1,123 @@
-// ============================================================
-// DIGIT HACKER TOOL - PREDICTION ENGINE
-// ============================================================
+// Extract last digit from price quote
+const getLastDigit = (quote) => Math.floor(quote * 10) % 10;
 
-// Get the actual final digit of a Deriv quote.
-const getLastDigit = (tick) => {
-  if (!tick || tick.quote === undefined || tick.quote === null) {
-    return null;
-  }
-
-  const quote = Number(tick.quote);
-
-  if (!Number.isFinite(quote)) {
-    return null;
-  }
-
-  // Use Deriv pip_size when available.
-  if (tick.pip_size !== undefined && tick.pip_size !== null) {
-    const pipSize = Number(tick.pip_size);
-
-    if (Number.isFinite(pipSize) && pipSize > 0) {
-      const decimals = Math.max(
-        0,
-        Math.round(-Math.log10(pipSize))
-      );
-
-      const formatted = quote.toFixed(decimals);
-      const lastDigit = formatted.charAt(formatted.length - 1);
-
-      if (/^\d$/.test(lastDigit)) {
-        return Number(lastDigit);
-      }
-    }
-  }
-
-  // Fallback.
-  const formatted = String(tick.quote);
-
-  for (let i = formatted.length - 1; i >= 0; i--) {
-    if (/\d/.test(formatted[i])) {
-      return Number(formatted[i]);
-    }
-  }
-
-  return null;
+// Clamp confidence between 55-95%
+const clampConfidence = (value) => {
+  const clamped = Math.max(55, Math.min(95, value));
+  return Math.round(clamped);
 };
 
+// Calculate recommended runs based on confidence
+const calculateRecommendedRuns = (confidence) => {
+  const normalized = (confidence - 85) / 14;
 
-// ============================================================
-// BASIC HELPERS
-// ============================================================
-
-const calculatePercentage = (count, total) => {
-  if (!total) return 0;
-
-  return Math.round((count / total) * 100);
+  if (normalized > 0.85) {
+    return Math.floor(Math.random() * 5) + 11;
+  } else if (normalized > 0.55) {
+    return Math.floor(Math.random() * 6) + 8;
+  } else {
+    return Math.floor(Math.random() * 6) + 5;
+  }
 };
 
+// Analyze Even/Odd pattern
+export const analyzeEvenOdd = (ticks) => {
+  if (!ticks || ticks.length < 10) return null;
 
-const countDigits = (digits) => {
+  const digits = ticks.map(t => getLastDigit(t.quote)).slice(-30);
+  const evenCount = digits.filter(d => d % 2 === 0).length;
+  const oddCount = digits.length - evenCount;
+
+  const prediction = evenCount > oddCount ? 'EVEN' : 'ODD';
+  const ratio = Math.max(evenCount, oddCount) / digits.length;
+  const confidence = clampConfidence(ratio * 100);
+
+  return { prediction, confidence };
+};
+
+// Analyze Over/Under pattern
+export const analyzeOverUnder = (ticks) => {
+  if (!ticks || ticks.length < 10) return null;
+
+  const digits = ticks.map(t => getLastDigit(t.quote)).slice(-30);
+
+  const OVER_RANGE = [4, 5, 6, 7];
+  const UNDER_RANGE = [2, 3, 4, 5];
+
+  const overCount = digits.filter(d => OVER_RANGE.includes(d)).length;
+  const underCount = digits.filter(d => UNDER_RANGE.includes(d)).length;
+  const totalRelevant = overCount + underCount;
+
+  if (totalRelevant === 0) {
+    const prediction = Math.random() > 0.5 ? 'OVER' : 'UNDER';
+    const digit = prediction === 'OVER' ? 6 : 3;
+
+    return {
+      prediction,
+      label: `${prediction} ${digit}`,
+      confidence: 55,
+      recommendedRuns: 5
+    };
+  }
+
+  const overRatio = overCount / totalRelevant;
+
+  let prediction = 'NEUTRAL';
+  let digit = null;
+
+  if (overRatio > 0.58) {
+    prediction = 'OVER';
+    digit = overCount > 18 ? 7 : overCount > 13 ? 6 : 5;
+  } else if (overRatio < 0.42) {
+    prediction = 'UNDER';
+    digit = underCount > 18 ? 2 : underCount > 13 ? 3 : 4;
+  }
+
+  if (prediction === 'NEUTRAL') return null;
+
+  const difference = Math.abs(overCount - underCount);
+  const confidenceRaw =
+    totalRelevant > 0
+      ? (difference / digits.length) * 100
+      : 0;
+
+  const confidence = clampConfidence(confidenceRaw);
+  const recommendedRuns = calculateRecommendedRuns(confidence);
+
+  return {
+    prediction,
+    label: `${prediction} ${digit}`,
+    confidence,
+    recommendedRuns
+  };
+};
+
+// Analyze Digit Match pattern
+export const analyzeDigitMatch = (ticks) => {
+  if (!ticks || ticks.length < 10) return null;
+
+  const digits = ticks.map(t => getLastDigit(t.quote)).slice(-30);
+
+  // Count frequency of each digit
   const frequency = {};
 
-  for (let digit = 0; digit <= 9; digit++) {
-    frequency[digit] = 0;
-  }
+  digits.forEach(d => {
+    frequency[d] = (frequency[d] || 0) + 1;
+  });
 
-  digits.forEach((digit) => {
-    if (digit >= 0 && digit <= 9) {
-      frequency[digit]++;
+  // Find most frequent digit
+  let maxCount = 0;
+  let prediction = 0;
+
+  Object.entries(frequency).forEach(([digit, count]) => {
+    if (count > maxCount) {
+      maxCount = count;
+      prediction = parseInt(digit);
     }
   });
 
-  return frequency;
-};
+  const confidenceRaw = (maxCount / digits.length) * 100;
+  const confidence = clampConfidence(confidenceRaw);
 
-
-// ============================================================
-// FIND STRONGEST DIGIT
-// ============================================================
-
-const findBestDigit = (frequency) => {
-  let bestDigit = 0;
-  let bestCount = -1;
-
-  for (let digit = 0; digit <= 9; digit++) {
-    if (frequency[digit] > bestCount) {
-      bestCount = frequency[digit];
-      bestDigit = digit;
-    }
-  }
-
-  return {
-    digit: bestDigit,
-    count: bestCount
-  };
-};
-
-
-// ============================================================
-// DIGIT MATCH
-// ============================================================
-//
-// IMPORTANT:
-//
-// Frequency is NOT the same thing as probability of winning.
-//
-// Example:
-// 6 occurrences of digit 5 in 30 ticks = 20% observed frequency.
-//
-// It does NOT mean the next tick has a 20% guaranteed chance
-// of being 5.
-//
-// Therefore we keep:
-//   observedFrequency
-//   signalStrength
-//
-// separate.
-//
-// ============================================================
-
-export const analyzeDigitMatch = (ticks) => {
-  if (!ticks || ticks.length < 10) {
-    return null;
-  }
-
-  const digits = ticks
-    .map(getLastDigit)
-    .filter((digit) => digit !== null)
-    .slice(-30);
-
-  if (digits.length < 10) {
-    return null;
-  }
-
-  // ----------------------------------------------------------
-  // Count ALL 10 digits
-  // ----------------------------------------------------------
-
-  const frequency = countDigits(digits);
-
-  // ----------------------------------------------------------
-  // Find strongest digit
-  // ----------------------------------------------------------
-
-  const best = findBestDigit(frequency);
-
-  const prediction = best.digit;
-  const frequencyCount = best.count;
-
-  const observedFrequency = calculatePercentage(
-    frequencyCount,
-    digits.length
-  );
-
-  // ----------------------------------------------------------
-  // SECOND-BEST DIGIT
-  // ----------------------------------------------------------
-
-  let secondBestCount = 0;
-
-  for (let digit = 0; digit <= 9; digit++) {
-    if (digit !== prediction) {
-      secondBestCount = Math.max(
-        secondBestCount,
-        frequency[digit]
-      );
-    }
-  }
-
-  // ----------------------------------------------------------
-  // EDGE OVER SECOND-BEST DIGIT
-  // ----------------------------------------------------------
-
-  const edge = frequencyCount - secondBestCount;
-
-  // ----------------------------------------------------------
-  // STABILITY
-  // ----------------------------------------------------------
-
-  const windows = [
-    digits.slice(-10),
-    digits.slice(-20),
-    digits.slice(-30)
-  ];
-
-  const windowPredictions = windows.map((window) => {
-    if (!window.length) {
-      return null;
-    }
-
-    const windowFrequency = countDigits(window);
-    return findBestDigit(windowFrequency).digit;
-  });
-
-  let stability = 0;
-
-  windowPredictions.forEach((digit) => {
-    if (digit === prediction) {
-      stability++;
-    }
-  });
-
-  // ----------------------------------------------------------
-  // SIGNAL STRENGTH
-  // ----------------------------------------------------------
-  //
-  // This is NOT winning probability.
-  //
-  // It measures how strong the current setup is based on:
-  //
-  // - observed frequency
-  // - distance from second-best digit
-  // - stability
-  // - sample size
-  //
-  // Maximum 100.
-  // ----------------------------------------------------------
-
-  let signalStrength = 0;
-
-  // Frequency component
-  if (observedFrequency >= 30) {
-    signalStrength += 35;
-  } else if (observedFrequency >= 25) {
-    signalStrength += 28;
-  } else if (observedFrequency >= 20) {
-    signalStrength += 20;
-  } else if (observedFrequency >= 15) {
-    signalStrength += 10;
-  }
-
-  // Edge component
-  if (edge >= 4) {
-    signalStrength += 30;
-  } else if (edge >= 3) {
-    signalStrength += 24;
-  } else if (edge >= 2) {
-    signalStrength += 16;
-  } else if (edge >= 1) {
-    signalStrength += 8;
-  }
-
-  // Stability component
-  if (stability === 3) {
-    signalStrength += 25;
-  } else if (stability === 2) {
-    signalStrength += 15;
-  } else if (stability === 1) {
-    signalStrength += 5;
-  }
-
-  // Sample-size component
-  if (digits.length >= 30) {
-    signalStrength += 10;
-  }
-
-  signalStrength = Math.min(100, signalStrength);
-
-  // ----------------------------------------------------------
-  // ENTRY CONDITIONS
-  // ----------------------------------------------------------
-  //
-  // We require:
-  //
-  // 30 valid ticks
-  // strong enough frequency
-  // meaningful edge
-  // stable prediction
-  //
-  // This is deliberately strict.
-  // ----------------------------------------------------------
-
-  const qualifiesForEntry =
-    digits.length >= 30 &&
-    observedFrequency >= 20 &&
-    edge >= 2 &&
-    stability >= 2;
-
-  let signal = 'NO ENTRY';
-
-  if (qualifiesForEntry) {
-    signal = 'ENTRY';
-  } else if (
-    digits.length >= 20 &&
-    observedFrequency >= 15 &&
-    stability >= 2
-  ) {
-    signal = 'WAIT';
-  }
-
-  // ----------------------------------------------------------
-  // ONE RUN ONLY
-  // ----------------------------------------------------------
-
-  const recommendedRuns =
-    signal === 'ENTRY'
-      ? 1
-      : 0;
-
-  // ----------------------------------------------------------
-  // ENTRY WINDOW
-  // ----------------------------------------------------------
-
-  const entryWindowSeconds =
-    signal === 'ENTRY'
-      ? 3
-      : 0;
-
-  // ----------------------------------------------------------
-  // RETURN
-  // ----------------------------------------------------------
-
-  return {
-    prediction,
-
-    // This is actual occurrence frequency,
-    // NOT a guaranteed probability.
-    confidence: observedFrequency,
-
-    observedFrequency,
-
-    frequency: frequencyCount,
-
-    frequencyTable: frequency,
-
-    secondBestCount,
-
-    edge,
-
-    stability,
-
-    sampleSize: digits.length,
-
-    signalStrength,
-
-    entryScore: signalStrength,
-
-    signal,
-
-    recommendedRuns,
-
-    entryWindowSeconds
-  };
-};
-
-
-// ============================================================
-// EVEN / ODD
-// ============================================================
-
-export const analyzeEvenOdd = (ticks) => {
-  if (!ticks || ticks.length < 10) {
-    return null;
-  }
-
-  const digits = ticks
-    .map(getLastDigit)
-    .filter((digit) => digit !== null)
-    .slice(-30);
-
-  if (digits.length < 10) {
-    return null;
-  }
-
-  const evenCount = digits.filter(
-    (digit) => digit % 2 === 0
-  ).length;
-
-  const oddCount =
-    digits.length - evenCount;
-
-  const prediction =
-    evenCount > oddCount
-      ? 'EVEN'
-      : 'ODD';
-
-  const winningCount =
-    Math.max(evenCount, oddCount);
-
-  return {
-    prediction,
-    confidence: calculatePercentage(
-      winningCount,
-      digits.length
-    )
-  };
-};
-
-
-// ============================================================
-// OVER / UNDER
-// ============================================================
-
-export const analyzeOverUnder = (ticks) => {
-  if (!ticks || ticks.length < 10) {
-    return null;
-  }
-
-  const digits = ticks
-    .map(getLastDigit)
-    .filter((digit) => digit !== null)
-    .slice(-30);
-
-  if (digits.length < 10) {
-    return null;
-  }
-
-  const overCount = digits.filter(
-    (digit) => digit >= 5
-  ).length;
-
-  const underCount = digits.filter(
-    (digit) => digit <= 4
-  ).length;
-
-  const prediction =
-    overCount > underCount
-      ? 'OVER'
-      : 'UNDER';
-
-  const winningCount =
-    Math.max(overCount, underCount);
-
-  return {
-    prediction,
-    confidence: calculatePercentage(
-      winningCount,
-      digits.length
-    ),
-    recommendedRuns: 1
-  };
+  return { prediction, confidence };
 };
