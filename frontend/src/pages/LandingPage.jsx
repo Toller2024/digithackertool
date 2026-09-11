@@ -3,12 +3,12 @@ import { TrendingUp, Zap, Shield, BarChart3 } from 'lucide-react';
 
 export default function LandingPage() {
   const handleLogin = () => {
-  window.location.href =
-    'https://digithackertool-backend.onrender.com/api/auth/deriv';
-};
+    window.location.href = '/api/auth/deriv';
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-800 text-white">
+      
       {/* Hero Section */}
       <div className="container mx-auto px-4 py-20">
         <motion.div
@@ -19,15 +19,17 @@ export default function LandingPage() {
           <h1 className="text-5xl md:text-7xl font-bold mb-6 bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
             Digit Hacker Tool
           </h1>
+
           <p className="text-xl md:text-2xl text-gray-300 mb-8">
             Automated Digit Analysis for Deriv Trading
           </p>
+
           <p className="text-gray-400 mb-12 max-w-2xl mx-auto">
             Access AI-powered digit analysis for Deriv volatility indices.
             <br />
             Login securely via Deriv OAuth.
           </p>
-          
+
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
@@ -69,9 +71,17 @@ export default function LandingPage() {
               transition={{ delay: idx * 0.1 }}
               className="bg-white/5 backdrop-blur-xl p-6 rounded-2xl border border-white/10"
             >
-              <div className="text-blue-400 mb-4">{feature.icon}</div>
-              <h3 className="text-xl font-semibold mb-2">{feature.title}</h3>
-              <p className="text-gray-400 text-sm">{feature.text}</p>
+              <div className="text-blue-400 mb-4">
+                {feature.icon}
+              </div>
+
+              <h3 className="text-xl font-semibold mb-2">
+                {feature.title}
+              </h3>
+
+              <p className="text-gray-400 text-sm">
+                {feature.text}
+              </p>
             </motion.div>
           ))}
         </div>
