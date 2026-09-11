@@ -8,6 +8,10 @@
       "destination": "https://digithackertool-backend.onrender.com/api/:path*"
     },
     {
+      "source": "/ticks/:path*",
+      "destination": "https://digithackertool-backend.onrender.com/ticks/:path*"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
