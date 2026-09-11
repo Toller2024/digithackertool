@@ -20,7 +20,7 @@ export default function Dashboard({ user, onLogout }) {
 
     SYMBOLS.forEach(({ symbol }) => {
       const es = new EventSource(
-  `https://digithackertool-backend.onrender.com/ticks/stream/${symbol}`
+  `/ticks/stream/${symbol}`
 );
       
       es.onmessage = (event) => {
