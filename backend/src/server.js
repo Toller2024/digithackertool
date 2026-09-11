@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
+import MongoStore from 'connect-mongo';
 import dotenv from 'dotenv';
 
 import { connectDB } from './config/database.js';
@@ -19,29 +20,23 @@ app.set('trust proxy', 1);
 
 const PORT = process.env.PORT || 5000;
 
-// Allowed frontend origins
 const allowedOrigins = [
   'https://digitalhackertool.vercel.app',
   'https://www.digitalhackertool.vercel.app'
 ];
 
-// Middleware
 app.use(helmet());
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests without an Origin header
-    // such as direct server-to-server requests.
     if (!origin) {
       return callback(null, true);
     }
 
-    // Allow the main Vercel website
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
 
-    // Allow Vercel preview deployments
     if (
       origin.endsWith('.vercel.app') &&
       origin.startsWith('https://')
@@ -49,7 +44,6 @@ app.use(cors({
       return callback(null, true);
     }
 
-    // Allow configured frontend URL if present
     if (
       process.env.FRONTEND_URL &&
       origin === process.env.FRONTEND_URL
@@ -67,16 +61,30 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser());
 
+/*
+ * Store sessions in MongoDB.
+ * This allows the OAuth session to survive
+ * the redirect from Deriv back to the frontend.
+ */
 app.use(session({
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
+
+  store: MongoStore.create({
+    mongoUrl: process.env.MONGODB_URI,
+    collectionName: 'sessions',
+    ttl: 24 * 60 * 60
+  }),
+
   cookie: {
-  secure: process.env.NODE_ENV === 'production',
-  httpOnly: true,
-  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-  maxAge: 24 * 60 * 60 * 1000
-}
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    sameSite: process.env.NODE_ENV === 'production'
+      ? 'none'
+      : 'lax',
+    maxAge: 24 * 60 * 60 * 1000
+  }
 }));
 
 // Routes
