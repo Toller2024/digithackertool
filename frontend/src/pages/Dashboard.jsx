@@ -1,123 +1,92 @@
-// Extract last digit from price quote
-const getLastDigit = (quote) => Math.floor(quote * 10) % 10;
+import { useState, useEffect } from 'react';
+import { motion } from 'framer-motion';
+import PredictionCard from '../components/PredictionCard';
+import { analyzeEvenOdd, analyzeOverUnder, analyzeDigitMatch } from '../utils/predictions';
 
-// Clamp confidence between 55-95%
-const clampConfidence = (value) => {
-  const clamped = Math.max(55, Math.min(95, value));
-  return Math.round(clamped);
-};
+const SYMBOLS = [
+  { symbol: 'R_10', name: 'Volatility 10' },
+  { symbol: 'R_25', name: 'Volatility 25' },
+  { symbol: 'R_50', name: 'Volatility 50' },
+  { symbol: 'R_75', name: 'Volatility 75' },
+  { symbol: 'R_100', name: 'Volatility 100' }
+];
 
-// Calculate recommended runs based on confidence
-const calculateRecommendedRuns = (confidence) => {
-  const normalized = (confidence - 85) / 14;
+export default function Dashboard({ user, onLogout }) {
+  const [tickData, setTickData] = useState({});
+  const [predictions, setPredictions] = useState({});
 
-  if (normalized > 0.85) {
-    return Math.floor(Math.random() * 5) + 11;
-  } else if (normalized > 0.55) {
-    return Math.floor(Math.random() * 6) + 8;
-  } else {
-    return Math.floor(Math.random() * 6) + 5;
-  }
-};
+  useEffect(() => {
+    const eventSources = {};
 
-// Analyze Even/Odd pattern
-export const analyzeEvenOdd = (ticks) => {
-  if (!ticks || ticks.length < 10) return null;
+    SYMBOLS.forEach(({ symbol }) => {
+      const es = new EventSource(`/api/ticks/stream/${symbol}`);
+      
+      es.onmessage = (event) => {
+        const tick = JSON.parse(event.data);
+        
+        setTickData(prev => {
+          const symbolData = prev[symbol] || [];
+          const updated = [...symbolData, tick].slice(-30);
+          
+          // Generate predictions
+          const evenOdd = analyzeEvenOdd(updated);
+          const overUnder = analyzeOverUnder(updated);
+          const digitMatch = analyzeDigitMatch(updated);
+          
+          setPredictions(p => ({
+            ...p,
+            [symbol]: { evenOdd, overUnder, digitMatch }
+          }));
+          
+          return { ...prev, [symbol]: updated };
+        });
+      };
+      
+      eventSources[symbol] = es;
+    });
 
-  const digits = ticks.map(t => getLastDigit(t.quote)).slice(-30);
-  const evenCount = digits.filter(d => d % 2 === 0).length;
-  const oddCount = digits.length - evenCount;
-
-  const prediction = evenCount > oddCount ? 'EVEN' : 'ODD';
-  const ratio = Math.max(evenCount, oddCount) / digits.length;
-  const confidence = clampConfidence(ratio * 100);
-
-  return { prediction, confidence };
-};
-
-// Analyze Over/Under pattern
-export const analyzeOverUnder = (ticks) => {
-  if (!ticks || ticks.length < 10) return null;
-
-  const digits = ticks.map(t => getLastDigit(t.quote)).slice(-30);
-
-  const OVER_RANGE = [4, 5, 6, 7];
-  const UNDER_RANGE = [2, 3, 4, 5];
-
-  const overCount = digits.filter(d => OVER_RANGE.includes(d)).length;
-  const underCount = digits.filter(d => UNDER_RANGE.includes(d)).length;
-  const totalRelevant = overCount + underCount;
-
-  if (totalRelevant === 0) {
-    const prediction = Math.random() > 0.5 ? 'OVER' : 'UNDER';
-    const digit = prediction === 'OVER' ? 6 : 3;
-
-    return {
-      prediction,
-      label: `${prediction} ${digit}`,
-      confidence: 55,
-      recommendedRuns: 5
+    return () => {
+      Object.values(eventSources).forEach(es => es.close());
     };
-  }
+  }, []);
 
-  const overRatio = overCount / totalRelevant;
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-800 text-white">
+      {/* Header */}
+      <header className="border-b border-white/10 bg-black/20 backdrop-blur-xl">
+        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
+          <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+            Digit Hacker Tool
+          </h1>
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-gray-400">{user.email}</span>
+            <button
+              onClick={onLogout}
+              className="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 rounded-lg transition"
+            >
+              Logout
+            </button>
+          </div>
+        </div>
+      </header>
 
-  let prediction = 'NEUTRAL';
-  let digit = null;
-
-  if (overRatio > 0.58) {
-    prediction = 'OVER';
-    digit = overCount > 18 ? 7 : overCount > 13 ? 6 : 5;
-  } else if (overRatio < 0.42) {
-    prediction = 'UNDER';
-    digit = underCount > 18 ? 2 : underCount > 13 ? 3 : 4;
-  }
-
-  if (prediction === 'NEUTRAL') return null;
-
-  const difference = Math.abs(overCount - underCount);
-  const confidenceRaw =
-    totalRelevant > 0
-      ? (difference / digits.length) * 100
-      : 0;
-
-  const confidence = clampConfidence(confidenceRaw);
-  const recommendedRuns = calculateRecommendedRuns(confidence);
-
-  return {
-    prediction,
-    label: `${prediction} ${digit}`,
-    confidence,
-    recommendedRuns
-  };
-};
-
-// Analyze Digit Match pattern
-export const analyzeDigitMatch = (ticks) => {
-  if (!ticks || ticks.length < 10) return null;
-
-  const digits = ticks.map(t => getLastDigit(t.quote)).slice(-30);
-
-  // Count frequency of each digit
-  const frequency = {};
-
-  digits.forEach(d => {
-    frequency[d] = (frequency[d] || 0) + 1;
-  });
-
-  // Find most frequent digit
-  let maxCount = 0;
-  let prediction = 0;
-
-  Object.entries(frequency).forEach(([digit, count]) => {
-    if (count > maxCount) {
-      maxCount = count;
-      prediction = parseInt(digit);
-    }
-  });
-
-  const confidenceRaw = (maxCount / digits.length) * 100;
-  const confidence = clampConfidence(confidenceRaw);
-
-  return { prediction, confidence };
-};
+      {/* Dashboard Content */}
+      <div className="container mx-auto px-4 py-8">
+        <h2 className="text-3xl font-bold mb-8 text-center">Live Predictions</h2>
+        
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {SYMBOLS.map(({ symbol, name }) => (
+            <PredictionCard
+              key={symbol}
+              symbol={symbol}
+              name={name}
+              predictions={predictions[symbol]}
+              tickCount={tickData[symbol]?.length || 0}
+              ticks={tickData[symbol] || []}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
