@@ -4,8 +4,6 @@ import { useState, useEffect } from 'react';
 import LandingPage from './pages/LandingPage';
 import Dashboard from './pages/Dashboard';
 
-const BACKEND_URL = 'https://digithackertool-backend.onrender.com';
-
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -17,7 +15,7 @@ function App() {
   const checkAuth = async () => {
     try {
       const response = await fetch(
-        `${BACKEND_URL}/api/auth/me`,
+        '/api/auth/me',
         {
           method: 'GET',
           credentials: 'include',
@@ -29,7 +27,6 @@ function App() {
 
       if (response.ok) {
         const data = await response.json();
-
         setUser(data.user || data);
       } else {
         setUser(null);
@@ -45,7 +42,7 @@ function App() {
   const handleLogout = async () => {
     try {
       await fetch(
-        `${BACKEND_URL}/api/auth/logout`,
+        '/api/auth/logout',
         {
           method: 'POST',
           credentials: 'include',
@@ -80,7 +77,6 @@ function App() {
     <BrowserRouter>
       <Routes>
 
-        {/* HOME */}
         <Route
           path="/"
           element={
@@ -92,7 +88,6 @@ function App() {
           }
         />
 
-        {/* DASHBOARD */}
         <Route
           path="/dashboard"
           element={
@@ -107,7 +102,6 @@ function App() {
           }
         />
 
-        {/* ANY UNKNOWN PAGE */}
         <Route
           path="*"
           element={
