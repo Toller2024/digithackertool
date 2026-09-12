@@ -5,30 +5,32 @@ class DerivAPI {
     this.appId = appId;
     this.ws = null;
     this.requestId = 0;
-
-    // Request callbacks
     this.callbacks = new Map();
-
-    // req_id -> subscription.id
     this.subscriptions = new Map();
-
-    // subscription.id -> callback
-    this.subscriptionCallbacks = new Map();
   }
 
   connect() {
     return new Promise((resolve, reject) => {
-      const wsUrl =
-        'wss://api.derivws.com/trading/v1/options/ws/public';
+      if (!this.appId) {
+        return reject(
+          new Error('DERIV_APP_ID is missing')
+        );
+      }
 
-      console.log('Connecting to Deriv public WebSocket...');
+      const wsUrl =
+        `wss://ws.derivws.com/websockets/v3?app_id=${this.appId}`;
+
+      console.log('=================================');
+      console.log('Connecting to Deriv WebSocket');
+      console.log(wsUrl);
+      console.log('=================================');
 
       this.ws = new WebSocket(wsUrl);
 
       let settled = false;
 
       this.ws.on('open', () => {
-        console.log('✅ Connected to Deriv public WebSocket');
+        console.log('✅ DERIV WEBSOCKET CONNECTED');
 
         if (!settled) {
           settled = true;
@@ -38,27 +40,34 @@ class DerivAPI {
 
       this.ws.on('message', (data) => {
         try {
-          const response = JSON.parse(data.toString());
-
-          console.log(
-            'Deriv message:',
-            response.msg_type || 'unknown'
+          const response = JSON.parse(
+            data.toString()
           );
 
-          // ------------------------------------------------
-          // ERROR RESPONSE
-          // ------------------------------------------------
+          console.log(
+            'DERIV:',
+            response.msg_type || 'unknown',
+            response.req_id || ''
+          );
+
+          // -----------------------------------------
+          // DERIV ERROR
+          // -----------------------------------------
 
           if (response.error) {
             console.error(
-              '❌ Deriv API error:',
+              '❌ DERIV ERROR:',
               JSON.stringify(response.error)
             );
 
             const reqId = response.req_id;
 
-            if (reqId && this.callbacks.has(reqId)) {
-              const callback = this.callbacks.get(reqId);
+            if (
+              reqId &&
+              this.callbacks.has(reqId)
+            ) {
+              const callback =
+                this.callbacks.get(reqId);
 
               callback(response);
 
@@ -68,9 +77,9 @@ class DerivAPI {
             return;
           }
 
-          // ------------------------------------------------
-          // TICK RESPONSE
-          // ------------------------------------------------
+          // -----------------------------------------
+          // TICK
+          // -----------------------------------------
 
           if (response.msg_type === 'tick') {
             const reqId = response.req_id;
@@ -78,28 +87,15 @@ class DerivAPI {
             // Save subscription ID
             if (
               reqId &&
-              response.subscription?.id
+              response.subscription &&
+              response.subscription.id
             ) {
-              const subscriptionId =
-                response.subscription.id;
-
               this.subscriptions.set(
                 reqId,
-                subscriptionId
+                response.subscription.id
               );
-
-              const callback =
-                this.callbacks.get(reqId);
-
-              if (callback) {
-                this.subscriptionCallbacks.set(
-                  subscriptionId,
-                  callback
-                );
-              }
             }
 
-            // First tick / subscription response
             if (
               reqId &&
               this.callbacks.has(reqId)
@@ -110,38 +106,28 @@ class DerivAPI {
               callback(response);
             }
 
-            // Subsequent streaming ticks
-            if (
-              response.subscription?.id
-            ) {
-              const subscriptionId =
-                response.subscription.id;
-
-              const callback =
-                this.subscriptionCallbacks.get(
-                  subscriptionId
-                );
-
-              if (callback) {
-                callback(response);
-              }
-            }
-
             return;
           }
 
-          // ------------------------------------------------
-          // NORMAL RESPONSE
-          // ------------------------------------------------
+          // -----------------------------------------
+          // OTHER RESPONSE
+          // -----------------------------------------
 
           if (
             response.req_id &&
-            this.callbacks.has(response.req_id)
+            this.callbacks.has(
+              response.req_id
+            )
           ) {
             const callback =
-              this.callbacks.get(response.req_id);
+              this.callbacks.get(
+                response.req_id
+              );
 
-            if (response.subscription?.id) {
+            if (
+              response.subscription &&
+              response.subscription.id
+            ) {
               this.subscriptions.set(
                 response.req_id,
                 response.subscription.id
@@ -157,16 +143,16 @@ class DerivAPI {
 
         } catch (error) {
           console.error(
-            '❌ Failed to process Deriv message:',
-            error?.message || String(error)
+            '❌ DERIV MESSAGE ERROR:',
+            error.message
           );
         }
       });
 
       this.ws.on('error', (error) => {
         console.error(
-          '❌ Deriv WebSocket error:',
-          error?.message || String(error)
+          '❌ DERIV WEBSOCKET ERROR:',
+          error.message
         );
 
         if (!settled) {
@@ -177,7 +163,7 @@ class DerivAPI {
 
       this.ws.on('close', (code, reason) => {
         console.log(
-          'Deriv WebSocket closed:',
+          '❌ DERIV WEBSOCKET CLOSED:',
           code,
           reason?.toString() || ''
         );
@@ -194,28 +180,33 @@ class DerivAPI {
         this.ws.readyState !== WebSocket.OPEN
       ) {
         return reject(
-          new Error('WebSocket not connected')
+          new Error(
+            'Deriv WebSocket is not connected'
+          )
         );
       }
 
       const reqId = ++this.requestId;
 
-      const requestWithId = {
+      const fullRequest = {
         ...request,
         req_id: reqId
       };
 
-      this.callbacks.set(reqId, (response) => {
-        if (response.error) {
-          reject(response.error);
-        } else {
-          resolve(response);
+      this.callbacks.set(
+        reqId,
+        (response) => {
+          if (response.error) {
+            reject(response.error);
+          } else {
+            resolve(response);
+          }
         }
-      });
+      );
 
       try {
         this.ws.send(
-          JSON.stringify(requestWithId)
+          JSON.stringify(fullRequest)
         );
       } catch (error) {
         this.callbacks.delete(reqId);
@@ -253,17 +244,19 @@ class DerivAPI {
       this.ws.readyState !== WebSocket.OPEN
     ) {
       throw new Error(
-        'WebSocket not connected'
+        'Deriv WebSocket is not connected'
       );
     }
 
     const reqId = ++this.requestId;
 
     console.log(
-      `📡 Subscribing to live ticks: ${symbol} | req_id=${reqId}`
+      `📡 SUBSCRIBING TO ${symbol}`
     );
 
-    this.callbacks.set(reqId, callback);
+    console.log(
+      `📡 REQUEST ID: ${reqId}`
+    );
 
     const request = {
       ticks: symbol,
@@ -271,12 +264,18 @@ class DerivAPI {
       req_id: reqId
     };
 
+    this.callbacks.set(
+      reqId,
+      callback
+    );
+
     try {
       this.ws.send(
         JSON.stringify(request)
       );
     } catch (error) {
       this.callbacks.delete(reqId);
+
       throw error;
     }
 
@@ -287,52 +286,45 @@ class DerivAPI {
     const subscriptionId =
       this.subscriptions.get(reqId);
 
-    if (subscriptionId) {
-      console.log(
-        `🛑 Forgetting Deriv subscription: ${subscriptionId}`
-      );
+    if (
+      subscriptionId &&
+      this.ws &&
+      this.ws.readyState === WebSocket.OPEN
+    ) {
+      try {
+        this.ws.send(
+          JSON.stringify({
+            forget: subscriptionId
+          })
+        );
 
-      if (
-        this.ws &&
-        this.ws.readyState === WebSocket.OPEN
-      ) {
-        try {
-          this.ws.send(
-            JSON.stringify({
-              forget: subscriptionId,
-              req_id: ++this.requestId
-            })
-          );
-        } catch (error) {
-          console.error(
-            'Forget subscription error:',
-            error
-          );
-        }
+        console.log(
+          `🛑 UNSUBSCRIBED: ${subscriptionId}`
+        );
+      } catch (error) {
+        console.error(
+          'Unsubscribe error:',
+          error.message
+        );
       }
-
-      this.subscriptionCallbacks.delete(
-        subscriptionId
-      );
-
-      this.subscriptions.delete(reqId);
     }
 
     this.callbacks.delete(reqId);
+    this.subscriptions.delete(reqId);
   }
 
   disconnect() {
     if (this.ws) {
       console.log(
-        'Closing Deriv WebSocket...'
+        'Closing Deriv WebSocket'
       );
 
       try {
         this.ws.close();
       } catch (error) {
         console.error(
-          'WebSocket close error:',
-          error
+          'Close error:',
+          error.message
         );
       }
 
@@ -341,7 +333,6 @@ class DerivAPI {
 
     this.callbacks.clear();
     this.subscriptions.clear();
-    this.subscriptionCallbacks.clear();
   }
 }
 
