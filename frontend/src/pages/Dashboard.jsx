@@ -1,618 +1,1184 @@
-* {
-  box-sizing: border-box;
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  analyzeEvenOdd,
+  analyzeOverUnder,
+  analyzeDigitMatch,
+} from '../utils/predictions';
+
+const SYMBOLS = [
+  { symbol: 'R_10', name: 'Volatility 10' },
+  { symbol: 'R_25', name: 'Volatility 25' },
+  { symbol: 'R_50', name: 'Volatility 50' },
+  { symbol: 'R_75', name: 'Volatility 75' },
+  { symbol: 'R_100', name: 'Volatility 100' },
+];
+
+const MAX_TICKS = 150;
+
+function getLastDigit(value) {
+  if (value === null || value === undefined) return null;
+
+  let price = value;
+
+  if (typeof value === 'object') {
+    price =
+      value?.quote ??
+      value?.price ??
+      value?.value ??
+      value?.tick?.quote ??
+      value?.data?.tick?.quote;
+  }
+
+  if (price === null || price === undefined) return null;
+
+  const text = String(price);
+
+  const decimalPart = text.includes('.')
+    ? text.split('.')[1]
+    : '';
+
+  if (decimalPart.length > 0) {
+    const digits = decimalPart.replace(/\D/g, '');
+    if (digits.length > 0) {
+      return Number(digits[digits.length - 1]);
+    }
+  }
+
+  const digits = text.replace(/\D/g, '');
+
+  if (!digits.length) return null;
+
+  return Number(digits[digits.length - 1]);
 }
 
-.prediction-dashboard {
-  min-height: 100vh;
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(0, 255, 170, 0.08),
-      transparent 35%
-    ),
-    #070b10;
-  color: #f4f7fa;
-  padding: 20px;
-  font-family:
-    Inter,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+function getTickValue(data) {
+  if (!data) return null;
+
+  if (data.tick) {
+    if (typeof data.tick === 'object') {
+      return (
+        data.tick.quote ??
+        data.tick.price ??
+        data.tick.value ??
+        null
+      );
+    }
+
+    return data.tick;
+  }
+
+  if (data.data?.tick) {
+    return (
+      data.data.tick.quote ??
+      data.data.tick.price ??
+      data.data.tick.value ??
+      null
+    );
+  }
+
+  return data.quote ?? data.price ?? data.value ?? null;
 }
 
-/* HEADER */
+function normalisePrediction(result, defaultType) {
+  if (!result) {
+    return {
+      type: defaultType,
+      prediction: null,
+      confidence: 0,
+    };
+  }
 
-.dashboard-header {
-  max-width: 1450px;
-  margin: 0 auto 22px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-}
+  let prediction =
+    result.prediction ??
+    result.predictedDigit ??
+    result.digit ??
+    result.signal ??
+    result.direction ??
+    result.result ??
+    null;
 
-.brand-line {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-}
+  let confidence =
+    result.confidence ??
+    result.probability ??
+    result.accuracy ??
+    result.score ??
+    0;
 
-.brand-mark {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
-  display: grid;
-  place-items: center;
-  font-weight: 900;
-  letter-spacing: -1px;
-  background: linear-gradient(
-    135deg,
-    #00e6a0,
-    #00a879
+  confidence = Number(confidence);
+
+  if (confidence > 0 && confidence <= 1) {
+    confidence *= 100;
+  }
+
+  if (!Number.isFinite(confidence)) {
+    confidence = 0;
+  }
+
+  confidence = Math.max(
+    0,
+    Math.min(100, confidence)
   );
-  color: #03100c;
-  box-shadow:
-    0 0 25px rgba(0, 230, 160, 0.18);
+
+  return {
+    type: result.type ?? defaultType,
+    prediction,
+    confidence,
+  };
 }
 
-.brand-line h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 800;
+function PredictionCard({
+  title,
+  subtitle,
+  prediction,
+  confidence,
+  digits,
+  connected,
+}) {
+  const displayPrediction =
+    prediction === null ||
+    prediction === undefined ||
+    prediction === ''
+      ? 'ANALYZING'
+      : prediction;
+
+  return (
+    <div style={styles.card}>
+
+      <div style={styles.cardHeader}>
+        <div>
+          <div style={styles.cardTitle}>
+            {title}
+          </div>
+
+          <div style={styles.cardSubtitle}>
+            {subtitle}
+          </div>
+        </div>
+
+        <div
+          style={{
+            ...styles.liveBadge,
+            color: connected
+              ? '#00e6a0'
+              : '#68747f',
+            borderColor: connected
+              ? 'rgba(0,230,160,.25)'
+              : '#273039',
+          }}
+        >
+          <span
+            style={{
+              ...styles.liveDot,
+              background: connected
+                ? '#00e6a0'
+                : '#56616b',
+              boxShadow: connected
+                ? '0 0 9px #00e6a0'
+                : 'none',
+            }}
+          />
+
+          {connected ? 'LIVE' : 'OFFLINE'}
+        </div>
+      </div>
+
+      <div style={styles.predictionBox}>
+
+        <div style={styles.smallLabel}>
+          PREDICTION
+        </div>
+
+        <div style={styles.prediction}>
+          {displayPrediction}
+        </div>
+
+        <div style={styles.confidenceRow}>
+          <span>Confidence</span>
+
+          <strong>
+            {confidence > 0
+              ? `${confidence.toFixed(0)}%`
+              : 'ANALYZING'}
+          </strong>
+        </div>
+
+        <div style={styles.progressBackground}>
+          <div
+            style={{
+              ...styles.progress,
+              width: `${confidence}%`,
+            }}
+          />
+        </div>
+
+      </div>
+
+      <div style={styles.recentTitle}>
+        RECENT DIGITS
+      </div>
+
+      <div style={styles.digitsContainer}>
+        {digits.length === 0 ? (
+          <span style={styles.waiting}>
+            Waiting for live ticks...
+          </span>
+        ) : (
+          digits.slice(-20).map((digit, index, array) => (
+            <div
+              key={`${index}-${digit}`}
+              style={{
+                ...styles.digit,
+                ...(index === array.length - 1
+                  ? styles.latestDigit
+                  : {}),
+              }}
+            >
+              {digit}
+            </div>
+          ))
+        )}
+      </div>
+
+      <div style={styles.executionRow}>
+        <div style={styles.executionText}>
+          <span style={styles.executionDot} />
+          LIVE EXECUTION WINDOW
+        </div>
+
+        <button
+          type="button"
+          style={styles.tradeButton}
+          disabled
+          title="Trading will be connected after prediction testing"
+        >
+          TRADE
+        </button>
+      </div>
+
+    </div>
+  );
 }
 
-.brand-line p {
-  margin: 3px 0 0;
-  color: #77838f;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 1.8px;
-}
+export default function Dashboard() {
+  const [selectedSymbol, setSelectedSymbol] =
+    useState('R_10');
 
-.connection-status {
-  border: 1px solid #29323b;
-  background: #0d1319;
-  padding: 9px 13px;
-  border-radius: 999px;
-  color: #84909b;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 1px;
-}
+  const [ticks, setTicks] = useState([]);
 
-.connection-status span {
-  width: 7px;
-  height: 7px;
-  display: inline-block;
-  border-radius: 50%;
-  background: #68737d;
-  margin-right: 7px;
-}
+  const [connected, setConnected] =
+    useState(false);
 
-.connection-status.online {
-  color: #52e5b1;
-  border-color: rgba(0, 230, 160, 0.25);
-}
+  const [connectionStatus, setConnectionStatus] =
+    useState('CONNECTING');
 
-.connection-status.online span {
-  background: #00e6a0;
-  box-shadow: 0 0 10px #00e6a0;
-}
+  const [lastPrice, setLastPrice] =
+    useState(null);
 
-/* MARKET SELECTOR */
+  const [lastDigit, setLastDigit] =
+    useState(null);
 
-.market-selector,
-.current-market,
-.prediction-card,
-.analytics-panel {
-  max-width: 1450px;
-  margin-left: auto;
-  margin-right: auto;
-}
+  const [error, setError] =
+    useState('');
 
-.market-selector {
-  margin-bottom: 14px;
-}
+  /*
+   * LIVE DERIV STREAM
+   */
+  useEffect(() => {
+    setTicks([]);
+    setLastPrice(null);
+    setLastDigit(null);
+    setConnected(false);
+    setConnectionStatus('CONNECTING');
+    setError('');
 
-.section-heading {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 9px;
-}
+    const url =
+      `/api/ticks/stream/${selectedSymbol}`;
 
-.section-heading span {
-  color: #dbe3e9;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 1.5px;
-}
-
-.section-heading small {
-  color: #56616c;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 1px;
-}
-
-.market-buttons {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 8px;
-}
-
-.market-buttons button {
-  border: 1px solid #1e2831;
-  border-radius: 12px;
-  background: #0c1218;
-  color: #8d99a4;
-  padding: 12px;
-  cursor: pointer;
-  text-align: left;
-  transition: 0.2s ease;
-}
-
-.market-buttons button:hover {
-  border-color: #40505d;
-  transform: translateY(-1px);
-}
-
-.market-buttons button.selected {
-  border-color: rgba(0, 230, 160, 0.6);
-  background:
-    linear-gradient(
-      135deg,
-      rgba(0, 230, 160, 0.12),
-      rgba(0, 230, 160, 0.025)
+    console.log(
+      'Connecting to tick stream:',
+      url
     );
-  color: #ffffff;
-  box-shadow:
-    0 0 20px rgba(0, 230, 160, 0.06);
-}
 
-.market-buttons strong {
-  display: block;
-  font-size: 11px;
-}
+    const source =
+      new EventSource(url);
 
-.market-buttons span {
-  display: block;
-  margin-top: 4px;
-  color: #586570;
-  font-size: 9px;
-}
+    source.onopen = () => {
+      console.log(
+        'Tick stream connected:',
+        selectedSymbol
+      );
 
-/* ACTIVE MARKET */
+      setConnected(true);
+      setConnectionStatus('LIVE');
+      setError('');
+    };
 
-.current-market {
-  margin-bottom: 14px;
-  padding: 16px;
-  border: 1px solid #1d2730;
-  border-radius: 15px;
-  background: #0b1117;
-  display: flex;
-  align-items: center;
-  gap: 35px;
-}
+    source.onmessage = (event) => {
+      try {
+        const data =
+          JSON.parse(event.data);
 
-.current-label {
-  color: #5d6a75;
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 1.5px;
-}
+        const value =
+          getTickValue(data);
 
-.current-market h2 {
-  margin: 4px 0 0;
-  font-size: 18px;
-}
+        const digit =
+          getLastDigit(value);
 
-.tick-display {
-  margin-left: auto;
-  text-align: right;
-}
+        if (digit === null) {
+          return;
+        }
 
-.tick-display + .tick-display {
-  margin-left: 0;
-}
+        setLastPrice(value);
+        setLastDigit(digit);
 
-.tick-display span {
-  display: block;
-  color: #5c6873;
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 1px;
-}
+        setTicks(previous => {
+          const next = [
+            ...previous,
+            value,
+          ];
 
-.tick-display strong {
-  display: block;
-  margin-top: 4px;
-  font-size: 16px;
-}
+          return next.slice(
+            -MAX_TICKS
+          );
+        });
 
-/* CARDS */
+        setConnected(true);
+        setConnectionStatus('LIVE');
 
-.prediction-grid {
-  max-width: 1450px;
-  margin: 0 auto;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-}
+      } catch (err) {
+        console.error(
+          'Tick parsing error:',
+          err
+        );
+      }
+    };
 
-.prediction-card {
-  width: 100%;
-  padding: 17px;
-  border: 1px solid #202a33;
-  border-radius: 16px;
-  background:
-    linear-gradient(
-      160deg,
-      #10171e 0%,
-      #0a1016 100%
+    source.onerror = () => {
+      console.error(
+        'Tick stream connection error'
+      );
+
+      setConnected(false);
+      setConnectionStatus(
+        'RECONNECTING'
+      );
+    };
+
+    return () => {
+      source.close();
+    };
+
+  }, [selectedSymbol]);
+
+  /*
+   * EXTRACT RECENT DIGITS
+   */
+  const recentDigits = useMemo(() => {
+    return ticks
+      .map(getLastDigit)
+      .filter(
+        digit =>
+          digit !== null &&
+          Number.isFinite(digit)
+      );
+  }, [ticks]);
+
+  /*
+   * DIGIT MATCH PREDICTION
+   */
+  const digitPrediction = useMemo(() => {
+    if (ticks.length < 10) {
+      return normalisePrediction(
+        null,
+        'MATCHES'
+      );
+    }
+
+    try {
+      const result =
+        analyzeDigitMatch(ticks);
+
+      return normalisePrediction(
+        result,
+        'MATCHES'
+      );
+
+    } catch (err) {
+      console.error(
+        'Digit Match error:',
+        err
+      );
+
+      return normalisePrediction(
+        null,
+        'MATCHES'
+      );
+    }
+  }, [ticks]);
+
+  /*
+   * EVEN / ODD PREDICTION
+   */
+  const evenOddPrediction = useMemo(() => {
+    if (ticks.length < 10) {
+      return normalisePrediction(
+        null,
+        'EVEN / ODD'
+      );
+    }
+
+    try {
+      const result =
+        analyzeEvenOdd(ticks);
+
+      return normalisePrediction(
+        result,
+        'EVEN / ODD'
+      );
+
+    } catch (err) {
+      console.error(
+        'Even/Odd error:',
+        err
+      );
+
+      return normalisePrediction(
+        null,
+        'EVEN / ODD'
+      );
+    }
+  }, [ticks]);
+
+  /*
+   * OVER / UNDER PREDICTION
+   */
+  const overUnderPrediction = useMemo(() => {
+    if (ticks.length < 10) {
+      return normalisePrediction(
+        null,
+        'OVER / UNDER'
+      );
+    }
+
+    try {
+      const result =
+        analyzeOverUnder(ticks);
+
+      return normalisePrediction(
+        result,
+        'OVER / UNDER'
+      );
+
+    } catch (err) {
+      console.error(
+        'Over/Under error:',
+        err
+      );
+
+      return normalisePrediction(
+        null,
+        'OVER / UNDER'
+      );
+    }
+  }, [ticks]);
+
+  const activeMarket =
+    SYMBOLS.find(
+      item =>
+        item.symbol === selectedSymbol
     );
-  box-shadow:
-    0 12px 35px rgba(0, 0, 0, 0.22);
+
+  return (
+    <div style={styles.page}>
+
+      {/* HEADER */}
+
+      <header style={styles.header}>
+
+        <div style={styles.brand}>
+          <div style={styles.logo}>
+            DH
+          </div>
+
+          <div>
+            <h1 style={styles.brandName}>
+              DigiHackerTool
+            </h1>
+
+            <div style={styles.brandSubtitle}>
+              LIVE DIGIT PREDICTION ENGINE
+            </div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            ...styles.connection,
+            borderColor: connected
+              ? 'rgba(0,230,160,.3)'
+              : '#273039',
+            color: connected
+              ? '#00e6a0'
+              : '#68747f',
+          }}
+        >
+          <span
+            style={{
+              ...styles.connectionDot,
+              background: connected
+                ? '#00e6a0'
+                : '#56616b',
+              boxShadow: connected
+                ? '0 0 9px #00e6a0'
+                : 'none',
+            }}
+          />
+
+          {connectionStatus}
+        </div>
+
+      </header>
+
+      {/* ERROR */}
+
+      {error && (
+        <div style={styles.errorBox}>
+          {error}
+        </div>
+      )}
+
+      {/* MARKET SELECTOR */}
+
+      <section style={styles.section}>
+
+        <div style={styles.sectionHeading}>
+          <span>MARKETS</span>
+          <small>
+            SELECT VOLATILITY INDEX
+          </small>
+        </div>
+
+        <div style={styles.marketGrid}>
+
+          {SYMBOLS.map(market => (
+            <button
+              key={market.symbol}
+              type="button"
+              onClick={() =>
+                setSelectedSymbol(
+                  market.symbol
+                )
+              }
+              style={{
+                ...styles.marketButton,
+                ...(selectedSymbol ===
+                market.symbol
+                  ? styles.marketSelected
+                  : {}),
+              }}
+            >
+              <strong>
+                {market.name}
+              </strong>
+
+              <span>
+                {market.symbol}
+              </span>
+            </button>
+          ))}
+
+        </div>
+
+      </section>
+
+      {/* ACTIVE MARKET */}
+
+      <section style={styles.activeMarket}>
+
+        <div>
+          <div style={styles.activeLabel}>
+            ACTIVE MARKET
+          </div>
+
+          <h2 style={styles.activeName}>
+            {activeMarket?.name}
+          </h2>
+        </div>
+
+        <div style={styles.marketInfo}>
+          <span>LAST PRICE</span>
+          <strong>
+            {lastPrice !== null
+              ? lastPrice
+              : '—'}
+          </strong>
+        </div>
+
+        <div style={styles.marketInfo}>
+          <span>LAST DIGIT</span>
+          <strong style={styles.greenText}>
+            {lastDigit !== null
+              ? lastDigit
+              : '—'}
+          </strong>
+        </div>
+
+        <div style={styles.marketInfo}>
+          <span>TICKS ANALYZED</span>
+          <strong>
+            {ticks.length}
+          </strong>
+        </div>
+
+      </section>
+
+      {/* PREDICTION CARDS */}
+
+      <section style={styles.cards}>
+
+        <PredictionCard
+          title="DIGIT MATCH"
+          subtitle="EXACT DIGIT ANALYSIS"
+          prediction={
+            digitPrediction.prediction !==
+            null
+              ? `MATCHES ${digitPrediction.prediction}`
+              : null
+          }
+          confidence={
+            digitPrediction.confidence
+          }
+          digits={recentDigits}
+          connected={connected}
+        />
+
+        <PredictionCard
+          title="EVEN / ODD"
+          subtitle="PARITY ANALYSIS"
+          prediction={
+            evenOddPrediction.prediction
+          }
+          confidence={
+            evenOddPrediction.confidence
+          }
+          digits={recentDigits}
+          connected={connected}
+        />
+
+        <PredictionCard
+          title="OVER / UNDER"
+          subtitle="DIGIT RANGE ANALYSIS"
+          prediction={
+            overUnderPrediction.prediction
+          }
+          confidence={
+            overUnderPrediction.confidence
+          }
+          digits={recentDigits}
+          connected={connected}
+        />
+
+      </section>
+
+      {/* ENGINE STATUS */}
+
+      <section style={styles.enginePanel}>
+
+        <div>
+          <div style={styles.engineLabel}>
+            PREDICTION ENGINE
+          </div>
+
+          <h2 style={styles.engineTitle}>
+            Real-Time Analysis
+          </h2>
+        </div>
+
+        <div style={styles.engineStatus}>
+
+          <div style={styles.statusItem}>
+            <span
+              style={{
+                ...styles.statusDot,
+                background:
+                  ticks.length >= 10
+                    ? '#00e6a0'
+                    : '#e7a83e',
+              }}
+            />
+
+            <span>
+              {ticks.length >= 10
+                ? 'ANALYSIS ACTIVE'
+                : 'COLLECTING TICKS'}
+            </span>
+          </div>
+
+          <div style={styles.statusItem}>
+            <span
+              style={{
+                ...styles.statusDot,
+                background: connected
+                  ? '#00e6a0'
+                  : '#e05252',
+              }}
+            />
+
+            <span>
+              {connected
+                ? 'DERIV STREAM CONNECTED'
+                : 'STREAM DISCONNECTED'}
+            </span>
+          </div>
+
+        </div>
+
+      </section>
+
+      {/* FOOTER */}
+
+      <footer style={styles.footer}>
+
+        <div>
+          <span
+            style={styles.footerDot}
+          />
+
+          LIVE DERIV TICK STREAM
+        </div>
+
+        <div>
+          DigiHackerTool Prediction Engine
+        </div>
+
+      </footer>
+
+    </div>
+  );
 }
 
-.prediction-card-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-}
 
-.market-title {
-  font-size: 12px;
-  font-weight: 900;
-  letter-spacing: 0.8px;
-}
+/*
+ * INLINE STYLES
+ */
 
-.market-subtitle {
-  margin-top: 4px;
-  color: #5d6975;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 1px;
-}
+const styles = {
+  page: {
+    minHeight: '100vh',
+    background:
+      'radial-gradient(circle at 85% 0%, rgba(0,230,160,.08), transparent 35%), #070b10',
+    color: '#f4f7fa',
+    padding: '18px',
+    fontFamily:
+      'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  },
 
-.live-pill {
-  display: flex;
-  align-items: center;
-  border-radius: 999px;
-  padding: 5px 8px;
-  font-size: 7px;
-  font-weight: 900;
-  letter-spacing: 1px;
-  background: #12191f;
-  color: #6f7a84;
-}
+  header: {
+    maxWidth: '1450px',
+    margin: '0 auto 20px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '15px',
+  },
 
-.live-pill span {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #56616b;
-  margin-right: 5px;
-}
+  brand: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+  },
 
-.live-pill.live {
-  color: #55e9b7;
-}
+  logo: {
+    width: '46px',
+    height: '46px',
+    borderRadius: '13px',
+    display: 'grid',
+    placeItems: 'center',
+    background:
+      'linear-gradient(135deg,#00e6a0,#00a879)',
+    color: '#03100c',
+    fontWeight: 950,
+    fontSize: '14px',
+    boxShadow:
+      '0 0 25px rgba(0,230,160,.18)',
+  },
 
-.live-pill.live span {
-  background: #00e6a0;
-  box-shadow: 0 0 8px #00e6a0;
-}
+  brandName: {
+    margin: 0,
+    fontSize: '20px',
+    fontWeight: 850,
+  },
 
-.prediction-main {
-  margin-top: 18px;
-  padding: 18px;
-  border-radius: 12px;
-  background: #080e13;
-  text-align: center;
-  border: 1px solid #182129;
-}
+  brandSubtitle: {
+    marginTop: '3px',
+    color: '#65727d',
+    fontSize: '8px',
+    fontWeight: 800,
+    letterSpacing: '1.7px',
+  },
 
-.prediction-label {
-  color: #56636e;
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 1.5px;
-}
+  connection: {
+    padding: '8px 12px',
+    border: '1px solid',
+    borderRadius: '999px',
+    background: '#0c1218',
+    fontSize: '9px',
+    fontWeight: 850,
+    letterSpacing: '1px',
+    display: 'flex',
+    alignItems: 'center',
+  },
 
-.prediction-value {
-  min-height: 58px;
-  margin: 5px 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #00e6a0;
-  font-size: 27px;
-  font-weight: 950;
-  letter-spacing: 0.5px;
-  text-shadow: 0 0 18px rgba(0, 230, 160, 0.15);
-}
+  connectionDot: {
+    width: '6px',
+    height: '6px',
+    borderRadius: '50%',
+    marginRight: '7px',
+  },
 
-.confidence-row {
-  display: flex;
-  justify-content: space-between;
-  color: #65717c;
-  font-size: 9px;
-  font-weight: 700;
-}
+  errorBox: {
+    maxWidth: '1450px',
+    margin: '0 auto 12px',
+    padding: '11px 13px',
+    borderRadius: '10px',
+    background: 'rgba(224,82,82,.08)',
+    border: '1px solid rgba(224,82,82,.25)',
+    color: '#ef8888',
+    fontSize: '10px',
+  },
 
-.confidence-row strong {
-  color: #d8e1e7;
-}
+  section: {
+    maxWidth: '1450px',
+    margin: '0 auto 13px',
+  },
 
-.confidence-bar {
-  height: 4px;
-  margin-top: 8px;
-  background: #182129;
-  border-radius: 10px;
-  overflow: hidden;
-}
+  sectionHeading: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '9px',
+    marginBottom: '8px',
+  },
 
-.confidence-fill {
-  height: 100%;
-  border-radius: 10px;
-  background: #00e6a0;
-  transition: width 0.3s ease;
-}
+  sectionHeading: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '9px',
+    marginBottom: '8px',
+    color: '#dce4e9',
+    fontSize: '9px',
+    fontWeight: 900,
+    letterSpacing: '1.5px',
+  },
 
-.digit-title {
-  margin-top: 17px;
-  margin-bottom: 8px;
-  color: #56636e;
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 1.3px;
-}
+  marketGrid: {
+    display: 'grid',
+    gridTemplateColumns:
+      'repeat(5, minmax(0,1fr))',
+    gap: '7px',
+  },
 
-.digits {
-  display: flex;
-  gap: 5px;
-  overflow: hidden;
-  min-height: 26px;
-}
+  marketButton: {
+    border: '1px solid #1e2831',
+    borderRadius: '11px',
+    background: '#0c1218',
+    color: '#8d99a4',
+    padding: '11px',
+    cursor: 'pointer',
+    textAlign: 'left',
+  },
 
-.digit {
-  min-width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  border-radius: 6px;
-  background: #141c23;
-  color: #a4afb8;
-  font-size: 10px;
-  font-weight: 800;
-}
+  marketSelected: {
+    borderColor:
+      'rgba(0,230,160,.55)',
+    background:
+      'linear-gradient(135deg,rgba(0,230,160,.12),rgba(0,230,160,.025))',
+    color: '#ffffff',
+  },
 
-.digit.latest {
-  background: rgba(0, 230, 160, 0.13);
-  color: #00e6a0;
-  border: 1px solid rgba(0, 230, 160, 0.25);
-}
+  activeMarket: {
+    maxWidth: '1450px',
+    margin: '0 auto 13px',
+    padding: '15px',
+    border: '1px solid #1d2730',
+    borderRadius: '14px',
+    background: '#0b1117',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '25px',
+  },
 
-.waiting {
-  color: #4d5963;
-  font-size: 9px;
-}
+  activeLabel: {
+    color: '#586570',
+    fontSize: '7px',
+    fontWeight: 900,
+    letterSpacing: '1.4px',
+  },
 
-.execution-window {
-  margin-top: 17px;
-  padding-top: 13px;
-  border-top: 1px solid #1a232c;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
+  activeName: {
+    margin: '4px 0 0',
+    fontSize: '17px',
+  },
 
-.execution-window > div {
-  display: flex;
-  align-items: center;
-  color: #697681;
-  font-size: 7px;
-  font-weight: 900;
-  letter-spacing: 0.8px;
-}
+  marketInfo: {
+    marginLeft: 'auto',
+    textAlign: 'right',
+  },
 
-.execution-dot {
-  width: 6px;
-  height: 6px;
-  margin-right: 6px;
-  border-radius: 50%;
-  background: #00e6a0;
-  box-shadow: 0 0 8px #00e6a0;
-}
+  greenText: {
+    color: '#00e6a0',
+  },
 
-.trade-button {
-  border: 0;
-  border-radius: 7px;
-  padding: 8px 13px;
-  background: #00e6a0;
-  color: #04120d;
-  font-size: 8px;
-  font-weight: 950;
-  cursor: pointer;
-}
+  cards: {
+    maxWidth: '1450px',
+    margin: '0 auto',
+    display: 'grid',
+    gridTemplateColumns:
+      'repeat(3, minmax(0,1fr))',
+    gap: '11px',
+  },
 
-.trade-button:hover {
-  filter: brightness(1.08);
-}
+  card: {
+    padding: '15px',
+    border: '1px solid #202a33',
+    borderRadius: '15px',
+    background:
+      'linear-gradient(160deg,#10171e,#0a1016)',
+    boxShadow:
+      '0 12px 35px rgba(0,0,0,.22)',
+  },
 
-.trade-button:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
+  cardHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
 
-/* STATISTICS */
+  cardTitle: {
+    fontSize: '11px',
+    fontWeight: 900,
+    letterSpacing: '.8px',
+  },
 
-.analytics-panel {
-  margin-top: 14px;
-  padding: 17px;
-  border: 1px solid #202a33;
-  border-radius: 16px;
-  background: #0b1117;
-}
+  cardSubtitle: {
+    marginTop: '4px',
+    color: '#5d6975',
+    fontSize: '7px',
+    fontWeight: 700,
+    letterSpacing: '1px',
+  },
 
-.analytics-title {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
+  liveBadge: {
+    padding: '5px 8px',
+    border: '1px solid',
+    borderRadius: '999px',
+    background: '#12191f',
+    fontSize: '7px',
+    fontWeight: 900,
+    letterSpacing: '1px',
+  },
 
-.analytics-title span {
-  color: #586570;
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 1.5px;
-}
+  liveDot: {
+    display: 'inline-block',
+    width: '5px',
+    height: '5px',
+    borderRadius: '50%',
+    marginRight: '5px',
+  },
 
-.analytics-title h2 {
-  margin: 4px 0 0;
-  font-size: 15px;
-}
+  predictionBox: {
+    marginTop: '17px',
+    padding: '17px',
+    borderRadius: '11px',
+    background: '#080e13',
+    border: '1px solid #182129',
+    textAlign: 'center',
+  },
 
-.accuracy {
-  text-align: right;
-}
+  smallLabel: {
+    color: '#56636e',
+    fontSize: '7px',
+    fontWeight: 900,
+    letterSpacing: '1.5px',
+  },
 
-.accuracy strong {
-  display: block;
-  color: #00e6a0;
-  font-size: 20px;
-}
+  prediction: {
+    minHeight: '55px',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    color: '#00e6a0',
+    fontSize: '24px',
+    fontWeight: 950,
+    textShadow:
+      '0 0 18px rgba(0,230,160,.15)',
+  },
 
-.accuracy span {
-  color: #53606b;
-  font-size: 7px;
-}
+  confidenceRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    color: '#65717c',
+    fontSize: '8px',
+    fontWeight: 700,
+  },
 
-.stats-grid {
-  margin-top: 15px;
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-}
+  progressBackground: {
+    height: '4px',
+    marginTop: '8px',
+    borderRadius: '10px',
+    background: '#182129',
+    overflow: 'hidden',
+  },
 
-.stat {
-  padding: 13px;
-  border: 1px solid #18222a;
-  border-radius: 10px;
-  background: #080e13;
-}
+  progress: {
+    height: '100%',
+    background: '#00e6a0',
+    borderRadius: '10px',
+    transition: 'width .3s ease',
+  },
 
-.stat span {
-  display: block;
-  color: #52606b;
-  font-size: 7px;
-  font-weight: 900;
-  letter-spacing: 1px;
-}
+  recentTitle: {
+    marginTop: '15px',
+    marginBottom: '7px',
+    color: '#56636e',
+    fontSize: '7px',
+    fontWeight: 900,
+    letterSpacing: '1.3px',
+  },
 
-.stat strong {
-  display: block;
-  margin-top: 5px;
-  font-size: 17px;
-}
+  digitsContainer: {
+    display: 'flex',
+    gap: '4px',
+    overflow: 'hidden',
+    minHeight: '24px',
+  },
 
-/* FOOTER */
+  digit: {
+    minWidth: '23px',
+    height: '23px',
+    display: 'grid',
+    placeItems: 'center',
+    borderRadius: '6px',
+    background: '#141c23',
+    color: '#a4afb8',
+    fontSize: '9px',
+    fontWeight: 800,
+  },
 
-.dashboard-footer {
-  max-width: 1450px;
-  margin: 15px auto 0;
-  padding: 12px 2px;
-  display: flex;
-  justify-content: space-between;
-  color: #46525c;
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 0.8px;
-}
+  latestDigit: {
+    background:
+      'rgba(0,230,160,.13)',
+    color: '#00e6a0',
+    border:
+      '1px solid rgba(0,230,160,.25)',
+  },
 
-.footer-live-dot {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin-right: 5px;
-  border-radius: 50%;
-  background: #00e6a0;
-}
+  waiting: {
+    color: '#4d5963',
+    fontSize: '9px',
+  },
 
-/* MOBILE */
+  executionRow: {
+    marginTop: '15px',
+    paddingTop: '12px',
+    borderTop: '1px solid #1a232c',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
 
-@media (max-width: 900px) {
-  .prediction-grid {
-    grid-template-columns: 1fr;
-  }
+  executionText: {
+    color: '#697681',
+    fontSize: '7px',
+    fontWeight: 900,
+    letterSpacing: '.8px',
+  },
 
-  .market-buttons {
-    grid-template-columns: repeat(2, 1fr);
-  }
+  executionDot: {
+    display: 'inline-block',
+    width: '6px',
+    height: '6px',
+    borderRadius: '50%',
+    background: '#00e6a0',
+    boxShadow:
+      '0 0 8px #00e6a0',
+    marginRight: '6px',
+  },
 
-  .stats-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
+  tradeButton: {
+    border: 0,
+    borderRadius: '7px',
+    padding: '7px 12px',
+    background: '#00e6a0',
+    color: '#04120d',
+    fontSize: '7px',
+    fontWeight: 950,
+    opacity: .35,
+    cursor: 'not-allowed',
+  },
 
-@media (max-width: 600px) {
-  .prediction-dashboard {
-    padding: 11px;
-  }
+  enginePanel: {
+    maxWidth: '1450px',
+    margin: '13px auto 0',
+    padding: '15px',
+    border: '1px solid #202a33',
+    borderRadius: '14px',
+    background: '#0b1117',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
 
-  .dashboard-header {
-    align-items: flex-start;
-  }
+  engineLabel: {
+    color: '#586570',
+    fontSize: '7px',
+    fontWeight: 900,
+    letterSpacing: '1.5px',
+  },
 
-  .brand-line h1 {
-    font-size: 17px;
-  }
+  engineTitle: {
+    margin: '4px 0 0',
+    fontSize: '14px',
+  },
 
-  .connection-status {
-    font-size: 8px;
-    padding: 7px 9px;
-  }
+  engineStatus: {
+    display: 'flex',
+    gap: '18px',
+  },
 
-  .market-buttons {
-    grid-template-columns: repeat(2, 1fr);
-  }
+  statusItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    color: '#6c7882',
+    fontSize: '7px',
+    fontWeight: 850,
+    letterSpacing: '.6px',
+  },
 
-  .market-buttons button {
-    padding: 10px;
-  }
+  statusDot: {
+    width: '6px',
+    height: '6px',
+    borderRadius: '50%',
+  },
 
-  .current-market {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-  }
+  footer: {
+    maxWidth: '1450px',
+    margin: '13px auto 0',
+    padding: '11px 2px',
+    display: 'flex',
+    justifyContent: 'space-between',
+    color: '#46525c',
+    fontSize: '7px',
+    fontWeight: 800,
+    letterSpacing: '.8px',
+  },
 
-  .tick-display {
-    margin-left: 0;
-    text-align: left;
-  }
-
-  .prediction-card {
-    padding: 14px;
-  }
-
-  .prediction-value {
-    font-size: 23px;
-  }
-
-  .digits {
-    gap: 4px;
-  }
-
-  .digit {
-    min-width: 22px;
-  }
-
-  .dashboard-footer {
-    flex-direction: column;
-    gap: 8px;
-  }
-}
+  footerDot: {
+    display: 'inline-block',
+    width: '5px',
+    height: '5px',
+    borderRadius: '50%',
+    background: '#00e6a0',
+    marginRight: '5px',
+  },
+};
