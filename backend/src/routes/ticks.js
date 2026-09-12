@@ -27,12 +27,14 @@ router.get('/stream/:symbol', async (req, res) => {
 
   console.log(`🌐 SSE CLIENT CONNECTED: ${symbol}`);
 
+  // SSE headers
   res.status(200);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
 
+  // Allow Vercel frontend
   const origin = req.headers.origin;
 
   if (
@@ -47,15 +49,16 @@ router.get('/stream/:symbol', async (req, res) => {
     res.setHeader('Vary', 'Origin');
   }
 
+  // Send headers immediately
   if (typeof res.flushHeaders === 'function') {
     res.flushHeaders();
   }
 
-  // Tell the browser the SSE connection is alive.
+  // Initial SSE message
   res.write(': connected\n\n');
 
-  let api;
-  let heartbeat;
+  let api = null;
+  let heartbeat = null;
 
   try {
     api = new DerivAPI(process.env.DERIV_APP_ID);
@@ -65,7 +68,7 @@ router.get('/stream/:symbol', async (req, res) => {
     console.log(`✅ DERIV CONNECTED FOR SSE: ${symbol}`);
 
     const reqId = api.subscribeTicks(symbol, (response) => {
-      if (!response?.tick) {
+      if (!response || !response.tick) {
         return;
       }
 
@@ -92,11 +95,18 @@ router.get('/stream/:symbol', async (req, res) => {
       reqId
     });
 
+    // Keep the browser connection alive.
     heartbeat = setInterval(() => {
       try {
         res.write(': heartbeat\n\n');
       } catch (error) {
+        console.error(
+          '❌ SSE HEARTBEAT ERROR:',
+          error?.message || String(error)
+        );
+
         clearInterval(heartbeat);
+        heartbeat = null;
       }
     }, 10000);
 
@@ -112,7 +122,9 @@ router.get('/stream/:symbol', async (req, res) => {
 
       if (connection) {
         try {
-          connection.api.unsubscribe(connection.reqId);
+          connection.api.unsubscribe(
+            connection.reqId
+          );
         } catch (error) {
           console.error(
             '❌ UNSUBSCRIBE ERROR:',
@@ -141,6 +153,19 @@ router.get('/stream/:symbol', async (req, res) => {
 
     if (heartbeat) {
       clearInterval(heartbeat);
+      heartbeat = null;
+    }
+
+    if (api) {
+      try {
+        api.disconnect();
+      } catch (disconnectError) {
+        console.error(
+          '❌ DERIV DISCONNECT ERROR:',
+          disconnectError?.message ||
+            String(disconnectError)
+        );
+      }
     }
 
     if (!res.headersSent) {
@@ -148,13 +173,20 @@ router.get('/stream/:symbol', async (req, res) => {
         error: 'Failed to start tick stream'
       });
     } else {
-      res.write(
-        `event: error\ndata: ${JSON.stringify({
-          error: 'Failed to start tick stream'
-        })}\n\n`
-      );
-
-      res.end();
+      try {
+        res.write(
+          `event: error\ndata: ${JSON.stringify({
+            error: 'Failed to start tick stream'
+          })}\n\n`
+        );
+        res.end();
+      } catch (writeError) {
+        console.error(
+          '❌ SSE ERROR RESPONSE FAILED:',
+          writeError?.message ||
+            String(writeError)
+        );
+      }
     }
   }
 });
