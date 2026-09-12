@@ -26,14 +26,70 @@ const allowedOrigins = [
 ];
 
 /*
- * Security headers
- * Explicitly allow resources to be accessed
- * across the Vercel → Render origin.
+ * SECURITY HEADERS
+ *
+ * Allow the Vercel frontend to establish:
+ * Vercel -> Render SSE connections.
  */
 app.use(
   helmet({
     crossOriginResourcePolicy: {
       policy: 'cross-origin'
+    },
+
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+
+        scriptSrc: [
+          "'self'",
+          "'unsafe-inline'",
+          "'unsafe-eval'"
+        ],
+
+        styleSrc: [
+          "'self'",
+          "'unsafe-inline'",
+          'https:'
+        ],
+
+        imgSrc: [
+          "'self'",
+          'data:',
+          'blob:',
+          'https:'
+        ],
+
+        fontSrc: [
+          "'self'",
+          'data:',
+          'https:'
+        ],
+
+        connectSrc: [
+          "'self'",
+          'https://digithackertool-backend.onrender.com',
+          'https://digitalhackertool.vercel.app',
+          'https://www.digitalhackertool.vercel.app',
+          'https://*.vercel.app',
+          'wss:',
+          'https:'
+        ],
+
+        frameSrc: [
+          "'self'",
+          'https:'
+        ],
+
+        objectSrc: ["'none'"],
+
+        baseUri: ["'self'"],
+
+        formAction: [
+          "'self'",
+          'https:'
+        ]
+      }
     }
   })
 );
@@ -41,57 +97,55 @@ app.use(
 /*
  * CORS
  */
-app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests without an Origin header
-    // such as health checks/server-to-server requests.
-    if (!origin) {
-      return callback(null, true);
-    }
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin) {
+        return callback(null, true);
+      }
 
-    // Main production frontend
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
 
-    // Allow Vercel preview deployments
-    if (
-      origin.startsWith('https://') &&
-      origin.endsWith('.vercel.app')
-    ) {
-      return callback(null, true);
-    }
+      if (
+        origin.startsWith('https://') &&
+        origin.endsWith('.vercel.app')
+      ) {
+        return callback(null, true);
+      }
 
-    // Allow configured frontend URL
-    if (
-      process.env.FRONTEND_URL &&
-      origin === process.env.FRONTEND_URL
-    ) {
-      return callback(null, true);
-    }
+      if (
+        process.env.FRONTEND_URL &&
+        origin === process.env.FRONTEND_URL
+      ) {
+        return callback(null, true);
+      }
 
-    return callback(
-      new Error('Not allowed by CORS')
-    );
-  },
-  credentials: true
-}));
+      return callback(
+        new Error('Not allowed by CORS')
+      );
+    },
+
+    credentials: true
+  })
+);
 
 /*
- * Body / cookie middleware
+ * Body and cookies
  */
 app.use(express.json());
 app.use(cookieParser());
 
 /*
- * Store sessions in MongoDB.
- * This allows the OAuth session to survive
- * the redirect from Deriv back to the frontend.
+ * MongoDB session storage
  */
 app.use(
   session({
     secret: process.env.SESSION_SECRET,
+
     resave: false,
+
     saveUninitialized: false,
 
     store: MongoStore.create({
@@ -101,26 +155,32 @@ app.use(
     }),
 
     cookie: {
-      secure: process.env.NODE_ENV === 'production',
+      secure:
+        process.env.NODE_ENV === 'production',
+
       httpOnly: true,
+
       sameSite:
         process.env.NODE_ENV === 'production'
           ? 'none'
           : 'lax',
+
       maxAge: 24 * 60 * 60 * 1000
     }
   })
 );
 
 /*
- * Routes
+ * ROUTES
  */
 app.use('/api/auth', authRoutes);
+
 app.use('/user', userRoutes);
+
 app.use('/ticks', tickRoutes);
 
 /*
- * Health check
+ * HEALTH CHECK
  */
 app.get('/health', (req, res) => {
   res.json({
@@ -130,7 +190,7 @@ app.get('/health', (req, res) => {
 });
 
 /*
- * Connect to database and start server
+ * START SERVER
  */
 connectDB()
   .then(() => {
