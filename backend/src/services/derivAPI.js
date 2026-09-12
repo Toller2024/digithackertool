@@ -40,9 +40,11 @@ class DerivAPI {
           const response = JSON.parse(data.toString());
 
           console.log(
-            '📨 DERIV MESSAGE:',
-            response.msg_type || 'unknown'
-          );
+            console.log(
+  '📨 DERIV FULL MESSAGE:',
+  JSON.stringify(response)
+);
+          
 
           // Report API errors clearly
           if (response.error) {
