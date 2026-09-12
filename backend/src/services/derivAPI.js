@@ -2,8 +2,6 @@ import WebSocket from 'ws';
 
 class DerivAPI {
   constructor(appId = null) {
-    // Public market-data WebSocket.
-    // No App ID or OAuth token is required for public ticks.
     this.wsUrl =
       'wss://api.derivws.com/trading/v1/options/ws/public';
 
@@ -39,14 +37,13 @@ class DerivAPI {
         try {
           const response = JSON.parse(data.toString());
 
+          // FULL RESPONSE LOG FOR DEBUGGING
           console.log(
-            console.log(
-  '📨 DERIV FULL MESSAGE:',
-  JSON.stringify(response)
-);
-          
+            '📨 DERIV FULL MESSAGE:',
+            JSON.stringify(response)
+          );
 
-          // Report API errors clearly
+          // Show Deriv errors clearly
           if (response.error) {
             console.error(
               '❌ DERIV API ERROR:',
@@ -55,7 +52,10 @@ class DerivAPI {
           }
 
           /*
-           * Tick subscription response
+           * TICK MESSAGE
+           *
+           * Keep subscription callbacks alive because
+           * multiple ticks are expected from one subscription.
            */
           if (response.msg_type === 'tick') {
             const reqId = response.req_id;
@@ -63,7 +63,6 @@ class DerivAPI {
             if (reqId && this.callbacks.has(reqId)) {
               const callback = this.callbacks.get(reqId);
 
-              // Save Deriv subscription ID
               if (response.subscription?.id) {
                 this.subscriptions.set(
                   reqId,
@@ -78,7 +77,12 @@ class DerivAPI {
           }
 
           /*
-           * Normal request response
+           * Other responses such as:
+           * authorize
+           * balance
+           * forget
+           * subscription confirmation
+           * errors
            */
           if (
             response.req_id &&
@@ -87,7 +91,6 @@ class DerivAPI {
             const callback =
               this.callbacks.get(response.req_id);
 
-            // Save subscription ID if provided
             if (response.subscription?.id) {
               this.subscriptions.set(
                 response.req_id,
@@ -97,7 +100,10 @@ class DerivAPI {
 
             callback(response);
 
-            // Remove one-time callback
+            /*
+             * Normal request callbacks are one-time.
+             * Tick subscriptions are kept alive.
+             */
             if (response.msg_type !== 'tick') {
               this.callbacks.delete(response.req_id);
             }
@@ -123,6 +129,7 @@ class DerivAPI {
 
         if (!settled) {
           settled = true;
+
           reject(
             new Error(
               error?.message ||
@@ -149,7 +156,9 @@ class DerivAPI {
         this.ws.readyState !== WebSocket.OPEN
       ) {
         return reject(
-          new Error('Deriv WebSocket is not connected')
+          new Error(
+            'Deriv WebSocket is not connected'
+          )
         );
       }
 
@@ -169,6 +178,11 @@ class DerivAPI {
       });
 
       try {
+        console.log(
+          '📤 DERIV SEND:',
+          JSON.stringify(requestWithId)
+        );
+
         this.ws.send(
           JSON.stringify(requestWithId)
         );
@@ -181,16 +195,14 @@ class DerivAPI {
 
   async authorize(token) {
     /*
-     * Public tick streaming does not require authorization.
+     * The public WebSocket does not require
+     * authorization for public market data.
      *
-     * This method is kept for compatibility with the
-     * existing application code.
+     * This method is kept for compatibility with
+     * the rest of the backend.
      */
     if (!token) {
-      return {
-        authorized: false,
-        public: true
-      };
+      throw new Error('Authorization token is required');
     }
 
     return this.send({
@@ -200,30 +212,29 @@ class DerivAPI {
 
   async getAccountBalance(token) {
     if (!token) {
-      throw new Error(
-        'Authentication token required for account balance'
-      );
+      throw new Error('Authorization token is required');
     }
 
-    await this.authorize(token);
-
     return this.send({
-      balance: 1,
-      account: 'all'
+      authorize: token
+    }).then(() => {
+      return this.send({
+        balance: 1
+      });
     });
   }
 
   async getAccountList(token) {
     if (!token) {
-      throw new Error(
-        'Authentication token required for account list'
-      );
+      throw new Error('Authorization token is required');
     }
 
-    await this.authorize(token);
-
     return this.send({
-      account_list: 1
+      authorize: token
+    }).then(() => {
+      return this.send({
+        account_list: 1
+      });
     });
   }
 
@@ -243,6 +254,12 @@ class DerivAPI {
       );
     }
 
+    if (typeof callback !== 'function') {
+      throw new Error(
+        'A tick callback function is required'
+      );
+    }
+
     const reqId = ++this.requestId;
 
     const request = {
@@ -256,10 +273,15 @@ class DerivAPI {
     );
 
     console.log(
-      '📤 DERIV REQUEST:',
+      '📤 DERIV TICK REQUEST:',
       JSON.stringify(request)
     );
 
+    /*
+     * IMPORTANT:
+     * Keep this callback in the Map because
+     * Deriv will send many tick messages.
+     */
     this.callbacks.set(reqId, callback);
 
     try {
@@ -275,47 +297,78 @@ class DerivAPI {
   }
 
   unsubscribe(reqId) {
+    if (!reqId) {
+      return;
+    }
+
     const subscriptionId =
       this.subscriptions.get(reqId);
 
-    this.callbacks.delete(reqId);
-    this.subscriptions.delete(reqId);
+    if (!subscriptionId) {
+      console.log(
+        `⚠️ No subscription ID found for request ${reqId}`
+      );
+
+      this.callbacks.delete(reqId);
+      return;
+    }
 
     if (
-      subscriptionId &&
-      this.ws &&
-      this.ws.readyState === WebSocket.OPEN
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN
     ) {
-      try {
-        this.ws.send(
-          JSON.stringify({
-            forget: subscriptionId
-          })
-        );
-
-        console.log(
-          `🛑 DERIV UNSUBSCRIBED: ${subscriptionId}`
-        );
-      } catch (error) {
-        console.error(
-          '❌ DERIV UNSUBSCRIBE ERROR:',
-          error?.message || String(error)
-        );
-      }
+      this.callbacks.delete(reqId);
+      this.subscriptions.delete(reqId);
+      return;
     }
+
+    const forgetRequest = {
+      forget: subscriptionId,
+      req_id: ++this.requestId
+    };
+
+    console.log(
+      '📤 DERIV UNSUBSCRIBE:',
+      JSON.stringify(forgetRequest)
+    );
+
+    try {
+      this.ws.send(
+        JSON.stringify(forgetRequest)
+      );
+    } catch (error) {
+      console.error(
+        '❌ DERIV UNSUBSCRIBE ERROR:',
+        error?.message || String(error)
+      );
+    }
+
+    this.callbacks.delete(reqId);
+    this.subscriptions.delete(reqId);
   }
 
   disconnect() {
-    if (this.ws) {
-      console.log(
-        '🔌 CLOSING DERIV WEBSOCKET'
-      );
+    console.log(
+      '🔌 DISCONNECTING FROM DERIV'
+    );
 
+    /*
+     * Clear callbacks and subscriptions.
+     */
+    this.callbacks.clear();
+    this.subscriptions.clear();
+
+    if (this.ws) {
       try {
-        this.ws.close();
+        if (
+          this.ws.readyState === WebSocket.OPEN ||
+          this.ws.readyState === WebSocket.CONNECTING
+        ) {
+          this.ws.close();
+        }
       } catch (error) {
         console.error(
-          '❌ DERIV CLOSE ERROR:',
+          '❌ DERIV DISCONNECT ERROR:',
           error?.message || String(error)
         );
       }
