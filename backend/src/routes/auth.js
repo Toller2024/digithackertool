@@ -35,6 +35,7 @@ router.get('/deriv', (req, res) => {
 
     if (!clientId) {
       console.error('DERIV_CLIENT_ID is missing');
+
       return res.redirect(
         `${getFrontendUrl()}/?error=missing_client_id`
       );
@@ -49,6 +50,12 @@ router.get('/deriv', (req, res) => {
       state,
       codeVerifier
     };
+
+    // TEMPORARY DIAGNOSTIC LOG
+    console.log('OAUTH SESSION CREATED:', {
+      sessionID: req.sessionID,
+      hasOAuthSession: !!req.session.derivOAuth
+    });
 
     const authUrl = new URL(DERIV_AUTH_URL);
 
@@ -81,7 +88,12 @@ router.get('/deriv', (req, res) => {
 
 // Deriv OAuth callback
 router.get('/deriv/callback', async (req, res) => {
-  const { code, state, error, error_description } = req.query;
+  const {
+    code,
+    state,
+    error,
+    error_description
+  } = req.query;
 
   if (error) {
     console.error(
@@ -102,10 +114,17 @@ router.get('/deriv/callback', async (req, res) => {
   }
 
   try {
+    // TEMPORARY DIAGNOSTIC LOG
+    console.log('OAUTH CALLBACK SESSION:', {
+      sessionID: req.sessionID,
+      hasOAuthSession: !!req.session.derivOAuth
+    });
+
     const oauthSession = req.session.derivOAuth;
 
     if (!oauthSession) {
       console.error('OAuth session data missing');
+
       return res.redirect(
         `${getFrontendUrl()}/?error=session_expired`
       );
@@ -149,7 +168,10 @@ router.get('/deriv/callback', async (req, res) => {
 
     const tokenData = await tokenResponse.json();
 
-    if (!tokenResponse.ok || !tokenData.access_token) {
+    if (
+      !tokenResponse.ok ||
+      !tokenData.access_token
+    ) {
       console.error(
         'Deriv token exchange failed:',
         tokenData
@@ -172,7 +194,8 @@ router.get('/deriv/callback', async (req, res) => {
       }
     );
 
-    const accountData = await accountResponse.json();
+    const accountData =
+      await accountResponse.json();
 
     if (!accountResponse.ok) {
       console.error(
@@ -180,7 +203,9 @@ router.get('/deriv/callback', async (req, res) => {
         accountData
       );
 
-      throw new Error('Could not retrieve Deriv account');
+      throw new Error(
+        'Could not retrieve Deriv account'
+      );
     }
 
     console.log(
@@ -194,7 +219,8 @@ router.get('/deriv/callback', async (req, res) => {
       [];
 
     const primaryAccount =
-      Array.isArray(accounts) && accounts.length > 0
+      Array.isArray(accounts) &&
+      accounts.length > 0
         ? accounts[0]
         : null;
 
@@ -245,7 +271,8 @@ router.get('/deriv/callback', async (req, res) => {
       user.deriv = {
         loginid,
         linkedAt:
-          user.deriv?.linkedAt || new Date(),
+          user.deriv?.linkedAt ||
+          new Date(),
         currency,
         token: accessToken
       };
