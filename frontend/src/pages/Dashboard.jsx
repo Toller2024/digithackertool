@@ -3,8 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   analyzeEvenOdd,
   analyzeOverUnder,
-  analyzeDigitMatch,
-  extractLastDigits
+  analyzeDigitMatch
 } from '../utils/predictions';
 
 const BACKEND_URL =
@@ -35,6 +34,33 @@ const SYMBOLS = [
 
 const REQUIRED_TICKS = 30;
 
+/*
+ * Extract the final digit from each quote.
+ */
+function extractLastDigits(ticks) {
+  return ticks.map((quote) => {
+    const number = Number(quote);
+
+    if (!Number.isFinite(number)) {
+      return null;
+    }
+
+    const text = String(number);
+
+    if (text.includes('.')) {
+      const decimalPart = text.split('.')[1];
+
+      if (decimalPart && decimalPart.length > 0) {
+        return Number(
+          decimalPart[decimalPart.length - 1]
+        );
+      }
+    }
+
+    return Math.abs(Math.trunc(number)) % 10;
+  });
+}
+
 export default function Dashboard() {
   const [marketData, setMarketData] = useState(() => {
     const initial = {};
@@ -44,8 +70,8 @@ export default function Dashboard() {
         ticks: [],
         prediction: null,
         loading: true,
-        error: null,
-        connected: false
+        connected: false,
+        error: null
       };
     });
 
@@ -58,11 +84,9 @@ export default function Dashboard() {
   useEffect(() => {
     mounted.current = true;
 
-    console.log('');
     console.log('====================================');
     console.log('🚀 DASHBOARD TICK STREAM STARTING');
     console.log('====================================');
-    console.log('');
 
     SYMBOLS.forEach(({ symbol }) => {
       startStream(symbol);
@@ -71,21 +95,15 @@ export default function Dashboard() {
     return () => {
       mounted.current = false;
 
-      console.log('');
       console.log('🛑 DASHBOARD STOPPING TICK STREAMS');
-      console.log('');
 
-      Object.entries(streams.current).forEach(
-        ([symbol, source]) => {
-          console.log(
-            `🔌 Closing SSE stream: ${symbol}`
-          );
-
+      Object.values(streams.current).forEach(
+        (source) => {
           try {
             source.close();
           } catch (error) {
             console.error(
-              `❌ Error closing ${symbol}:`,
+              'Stream close error:',
               error
             );
           }
@@ -97,142 +115,91 @@ export default function Dashboard() {
   }, []);
 
   function startStream(symbol) {
-    /*
-     * Close an existing stream first.
-     */
+    if (!mounted.current) return;
+
     if (streams.current[symbol]) {
       try {
         streams.current[symbol].close();
       } catch (_) {}
-
-      delete streams.current[symbol];
     }
 
-    /*
-     * DIRECT RENDER SSE ENDPOINT
-     *
-     * We intentionally connect directly to Render.
-     * This avoids Vercel proxying/buffering the SSE stream.
-     */
     const url =
       `${BACKEND_URL}/ticks/stream/${symbol}`;
 
-    console.log('');
     console.log(
-      '===================================='
-    );
-    console.log(
-      `📡 OPENING SSE: ${symbol}`
-    );
-    console.log(
-      'URL:',
+      `📡 Connecting to ${symbol}:`,
       url
     );
-    console.log(
-      '===================================='
-    );
 
-    let source;
-
-    try {
-      source = new EventSource(url);
-    } catch (error) {
-      console.error(
-        `❌ FAILED TO CREATE EVENTSOURCE: ${symbol}`,
-        error
-      );
-
-      setError(
-        symbol,
-        'Unable to create tick connection.'
-      );
-
-      return;
-    }
+    const source = new EventSource(url);
 
     streams.current[symbol] = source;
 
     /*
-     * CONNECTION OPEN
+     * SSE connection opened.
      */
     source.onopen = () => {
       console.log(
         `✅ SSE CONNECTED: ${symbol}`
       );
 
-      if (!mounted.current) {
-        return;
-      }
+      if (!mounted.current) return;
 
       setMarketData((previous) => ({
         ...previous,
         [symbol]: {
           ...previous[symbol],
           connected: true,
-          loading:
-            previous[symbol].ticks.length <
-            REQUIRED_TICKS,
+          loading: true,
           error: null
         }
       }));
     };
 
     /*
-     * INITIAL CONNECTION EVENT
-     *
      * Backend sends:
      *
      * event: connected
-     *
-     * We don't need to process it as a tick,
-     * but logging it confirms the SSE channel
-     * itself is alive.
+     * data: {"symbol":"R_10","status":"connected"}
      */
     source.addEventListener(
       'connected',
       (event) => {
         console.log(
-          `🟢 SSE SERVER CONFIRMED CONNECTION: ${symbol}`,
+          `🔗 SSE CONNECTED EVENT: ${symbol}`,
           event.data
         );
+
+        if (!mounted.current) return;
+
+        setMarketData((previous) => ({
+          ...previous,
+          [symbol]: {
+            ...previous[symbol],
+            connected: true,
+            error: null
+          }
+        }));
       }
     );
 
     /*
-     * NORMAL SSE MESSAGE
-     *
-     * Backend sends live ticks using:
-     *
-     * data: {...}
-     *
-     * therefore they arrive here.
+     * Normal SSE tick messages.
      */
     source.onmessage = (event) => {
-      if (!mounted.current) {
-        return;
-      }
-
       try {
-        if (!event.data) {
-          return;
-        }
-
         console.log(
-          `📥 SSE DATA RECEIVED: ${symbol}`,
+          `📥 SSE DATA RECEIVED ${symbol}:`,
           event.data
         );
 
-        const tick =
-          JSON.parse(event.data);
+        const tick = JSON.parse(event.data);
 
         console.log(
           `📈 TICK RECEIVED ${symbol}:`,
           tick
         );
 
-        /*
-         * Extract the actual Deriv quote.
-         */
         const quote = Number(
           tick.quote ??
           tick.price ??
@@ -241,31 +208,18 @@ export default function Dashboard() {
 
         if (!Number.isFinite(quote)) {
           console.warn(
-            `⚠️ INVALID QUOTE: ${symbol}`,
+            `⚠️ Invalid quote for ${symbol}:`,
             tick
           );
 
           return;
         }
 
-        /*
-         * Add the real Deriv quote to the
-         * rolling 30-tick window.
-         */
-        setMarketData((previous) => {
-          const current =
-            previous[symbol] || {
-              ticks: [],
-              prediction: null,
-              loading: true,
-              error: null,
-              connected: true
-            };
+        if (!mounted.current) return;
 
+        setMarketData((previous) => {
           const oldTicks =
-            Array.isArray(current.ticks)
-              ? current.ticks
-              : [];
+            previous[symbol]?.ticks || [];
 
           const newTicks = [
             ...oldTicks,
@@ -282,42 +236,45 @@ export default function Dashboard() {
             newTicks.length >=
             REQUIRED_TICKS
           ) {
-            prediction =
-              makePrediction(
-                newTicks,
-                symbol
-              );
-
-            console.log(
-              `🎯 PREDICTION READY: ${symbol}`,
-              prediction
+            prediction = makePrediction(
+              newTicks,
+              symbol
             );
           }
 
           return {
             ...previous,
+
             [symbol]: {
-              ...current,
+              ...previous[symbol],
+
               ticks: newTicks,
+
               prediction,
+
               loading:
                 newTicks.length <
                 REQUIRED_TICKS,
-              error: null,
-              connected: true
+
+              connected: true,
+
+              error: null
             }
           };
         });
       } catch (error) {
         console.error(
-          `❌ FAILED TO PROCESS SSE TICK: ${symbol}`,
+          `❌ Failed to process ${symbol} tick:`,
           error
         );
       }
     };
 
     /*
-     * ERROR / AUTOMATIC RECONNECT
+     * SSE connection error.
+     *
+     * EventSource automatically attempts
+     * to reconnect.
      */
     source.onerror = (error) => {
       console.error(
@@ -325,51 +282,27 @@ export default function Dashboard() {
         error
       );
 
-      /*
-       * Important:
-       * EventSource automatically attempts to reconnect.
-       * We do NOT create another EventSource here.
-       */
-
-      if (!mounted.current) {
-        return;
-      }
+      if (!mounted.current) return;
 
       setMarketData((previous) => ({
         ...previous,
+
         [symbol]: {
           ...previous[symbol],
+
           connected: false,
+
+          loading: true,
+
           error:
-            'Connection interrupted. Reconnecting...',
-          loading:
-            previous[symbol].ticks.length <
-            REQUIRED_TICKS
+            'Connection lost. Reconnecting...'
         }
       }));
     };
   }
 
-  function setError(symbol, message) {
-    setMarketData((previous) => ({
-      ...previous,
-      [symbol]: {
-        ...previous[symbol],
-        error: message,
-        loading: true,
-        connected: false
-      }
-    }));
-  }
-
   function makePrediction(ticks, symbol) {
     try {
-      /*
-       * These are REAL Deriv ticks.
-       *
-       * No simulated values are inserted.
-       */
-
       const evenOdd =
         analyzeEvenOdd(ticks);
 
@@ -382,36 +315,85 @@ export default function Dashboard() {
       const digitMatch =
         analyzeDigitMatch(ticks);
 
+      const validDigits =
+        digits.filter(
+          (digit) =>
+            digit !== null &&
+            Number.isFinite(digit)
+        );
+
       return {
         symbol,
+
         evenOdd,
+
         overUnder,
+
         digits,
+
         digitMatch,
+
         lastDigit:
-          digits?.length
-            ? digits[digits.length - 1]
+          validDigits.length > 0
+            ? validDigits[
+                validDigits.length - 1
+              ]
             : null,
+
         tickCount: ticks.length
       };
     } catch (error) {
       console.error(
-        `❌ PREDICTION ERROR: ${symbol}`,
+        `❌ Prediction error for ${symbol}:`,
         error
       );
 
       return {
         error:
           'Prediction calculation error',
+
         tickCount: ticks.length
       };
     }
   }
 
-  function renderPrediction(data) {
-    if (!data) {
-      return null;
+  function formatPrediction(value) {
+    if (
+      value === null ||
+      value === undefined
+    ) {
+      return '—';
     }
+
+    if (typeof value === 'string') {
+      return value;
+    }
+
+    if (typeof value === 'number') {
+      return String(value);
+    }
+
+    if (value.prediction !== undefined) {
+      return String(value.prediction);
+    }
+
+    if (value.result !== undefined) {
+      return String(value.result);
+    }
+
+    if (value.direction !== undefined) {
+      return String(value.direction);
+    }
+
+    if (value.label !== undefined) {
+      return String(value.label);
+    }
+
+    return 'Ready';
+  }
+
+  function renderPrediction(data) {
+    if (!data) return null;
 
     if (data.error) {
       return (
@@ -424,15 +406,13 @@ export default function Dashboard() {
     return (
       <div style={styles.predictionBox}>
         <div style={styles.predictionTitle}>
-          🎯 Prediction Ready
+          Prediction Ready
         </div>
 
         {data.lastDigit !== null &&
           data.lastDigit !== undefined && (
             <div style={styles.row}>
-              <span>
-                Last Digit
-              </span>
+              <span>Last Digit</span>
 
               <strong>
                 {data.lastDigit}
@@ -442,9 +422,7 @@ export default function Dashboard() {
 
         {data.evenOdd && (
           <div style={styles.row}>
-            <span>
-              Even / Odd
-            </span>
+            <span>Even / Odd</span>
 
             <strong>
               {formatPrediction(
@@ -456,9 +434,7 @@ export default function Dashboard() {
 
         {data.overUnder && (
           <div style={styles.row}>
-            <span>
-              Over / Under
-            </span>
+            <span>Over / Under</span>
 
             <strong>
               {formatPrediction(
@@ -470,9 +446,7 @@ export default function Dashboard() {
 
         {data.digitMatch && (
           <div style={styles.row}>
-            <span>
-              Digit Match
-            </span>
+            <span>Digit Match</span>
 
             <strong>
               {formatPrediction(
@@ -481,59 +455,8 @@ export default function Dashboard() {
             </strong>
           </div>
         )}
-
-        <div style={styles.tickStatus}>
-          Using {data.tickCount} live ticks
-        </div>
       </div>
     );
-  }
-
-  function formatPrediction(value) {
-    if (
-      value === null ||
-      value === undefined
-    ) {
-      return '—';
-    }
-
-    if (
-      typeof value === 'string'
-    ) {
-      return value;
-    }
-
-    if (
-      typeof value === 'number'
-    ) {
-      return String(value);
-    }
-
-    if (value.prediction) {
-      return String(
-        value.prediction
-      );
-    }
-
-    if (value.result) {
-      return String(
-        value.result
-      );
-    }
-
-    if (value.direction) {
-      return String(
-        value.direction
-      );
-    }
-
-    if (value.label) {
-      return String(
-        value.label
-      );
-    }
-
-    return 'Ready';
   }
 
   return (
@@ -543,9 +466,9 @@ export default function Dashboard() {
           Live Predictions
         </h1>
 
-        <div style={styles.subtitle}>
-          Real-time Deriv market data
-        </div>
+        <p style={styles.subtitle}>
+          Real-time Deriv market analysis
+        </p>
       </div>
 
       <div style={styles.grid}>
@@ -554,18 +477,24 @@ export default function Dashboard() {
             const data =
               marketData[symbol] || {
                 ticks: [],
-                prediction: null,
                 loading: true,
-                error: null,
-                connected: false
+                connected: false,
+                error: null
               };
 
             const count =
               data.ticks.length;
 
             const ready =
-              count >=
-              REQUIRED_TICKS;
+              count >= REQUIRED_TICKS;
+
+            const progress =
+              Math.min(
+                (count /
+                  REQUIRED_TICKS) *
+                  100,
+                100
+              );
 
             return (
               <div
@@ -573,14 +502,10 @@ export default function Dashboard() {
                 style={styles.card}
               >
                 <div
-                  style={
-                    styles.cardHeader
-                  }
+                  style={styles.cardHeader}
                 >
                   <h2
-                    style={
-                      styles.name
-                    }
+                    style={styles.name}
                   >
                     {name}
                   </h2>
@@ -589,17 +514,19 @@ export default function Dashboard() {
                     style={{
                       ...styles.status,
                       ...(data.connected
-                        ? styles.statusConnected
-                        : styles.statusDisconnected)
+                        ? styles.live
+                        : styles.connecting)
                     }}
                   >
-                    <span>
-                      ●
-                    </span>
+                    <span
+                      style={
+                        styles.statusDot
+                      }
+                    />
 
                     {data.connected
-                      ? ' LIVE'
-                      : ' CONNECTING'}
+                      ? 'LIVE'
+                      : 'CONNECTING'}
                   </div>
                 </div>
 
@@ -626,12 +553,11 @@ export default function Dashboard() {
 
                     <div
                       style={
-                        styles.tickCount
+                        styles.progressText
                       }
                     >
                       {count}/
-                      {REQUIRED_TICKS}
-                      {' '}
+                      {REQUIRED_TICKS}{' '}
                       ticks
                     </div>
 
@@ -642,15 +568,21 @@ export default function Dashboard() {
                     >
                       <div
                         style={{
-                          ...styles.progress,
-                          width: `${Math.min(
-                            100,
-                            (count /
-                              REQUIRED_TICKS) *
-                              100
-                          )}%`
+                          ...styles.progressBar,
+                          width: `${progress}%`
                         }}
                       />
+                    </div>
+
+                    <div
+                      style={
+                        styles.waiting
+                      }
+                    >
+                      Prediction will
+                      appear after{' '}
+                      {REQUIRED_TICKS}{' '}
+                      live ticks.
                     </div>
                   </div>
                 )}
@@ -659,6 +591,14 @@ export default function Dashboard() {
                   renderPrediction(
                     data.prediction
                   )}
+
+                <div
+                  style={
+                    styles.tickInfo
+                  }
+                >
+                  Live ticks: {count}
+                </div>
               </div>
             );
           }
@@ -675,83 +615,98 @@ const styles = {
       'linear-gradient(135deg, #05070d, #101722)',
     color: '#ffffff',
     padding:
-      '50px 28px'
+      '40px 20px 60px',
+    boxSizing: 'border-box'
   },
 
   header: {
     textAlign: 'center',
-    marginBottom:
-      '55px'
+    marginBottom: '40px'
   },
 
   title: {
-    fontSize: '48px',
+    fontSize:
+      'clamp(32px, 8vw, 48px)',
     fontWeight: '800',
     margin: 0
   },
 
   subtitle: {
-    marginTop: '10px',
-    color: '#aeb4c2',
-    fontSize: '18px'
+    color: '#9da7b8',
+    fontSize: '17px',
+    marginTop: '10px'
   },
 
   grid: {
-    maxWidth: '900px',
+    maxWidth: '1000px',
     margin: '0 auto',
     display: 'grid',
     gridTemplateColumns:
       'repeat(auto-fit, minmax(280px, 1fr))',
-    gap: '28px'
+    gap: '24px'
   },
 
   card: {
     background:
-      'rgba(35, 38, 45, 0.88)',
+      'rgba(35, 38, 45, 0.9)',
     border:
-      '1px solid rgba(255,255,255,0.25)',
-    borderRadius: '25px',
-    padding: '32px',
-    minHeight: '200px',
+      '1px solid rgba(255,255,255,0.18)',
+    borderRadius: '22px',
+    padding: '26px',
+    minHeight: '220px',
     boxShadow:
-      '0 10px 35px rgba(0,0,0,0.3)'
+      '0 10px 35px rgba(0,0,0,0.3)',
+    boxSizing: 'border-box'
   },
 
   cardHeader: {
     display: 'flex',
     justifyContent:
       'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: '15px',
     marginBottom: '25px'
   },
 
   name: {
     color: '#8fc1ff',
-    fontSize: '27px',
+    fontSize: '24px',
     margin: 0
   },
 
   status: {
-    fontSize: '13px',
-    fontWeight: '700',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '7px',
+    fontSize: '12px',
+    fontWeight: '800',
+    letterSpacing: '0.5px',
     whiteSpace: 'nowrap'
   },
 
-  statusConnected: {
-    color: '#5cff9d'
+  live: {
+    color: '#70e090'
   },
 
-  statusDisconnected: {
-    color: '#ffb36b'
+  connecting: {
+    color: '#ffd166'
+  },
+
+  statusDot: {
+    width: '8px',
+    height: '8px',
+    borderRadius: '50%',
+    background:
+      'currentColor',
+    display: 'inline-block'
   },
 
   collecting: {
-    color: '#aeb4c2',
-    fontSize: '20px'
+    color: '#c1c7d0',
+    fontSize: '18px'
   },
 
-  tickCount: {
+  progressText: {
     marginTop: '10px',
     color: '#ffffff',
     fontWeight: '700'
@@ -759,20 +714,28 @@ const styles = {
 
   progressBackground: {
     height: '8px',
+    width: '100%',
     background:
-      'rgba(255,255,255,0.1)',
-    borderRadius: '10px',
-    marginTop: '15px',
-    overflow: 'hidden'
+      'rgba(255,255,255,0.12)',
+    borderRadius: '20px',
+    overflow: 'hidden',
+    marginTop: '12px'
   },
 
-  progress: {
+  progressBar: {
     height: '100%',
     background:
-      '#5cff9d',
-    borderRadius: '10px',
+      'linear-gradient(90deg, #4da3ff, #70e090)',
+    borderRadius: '20px',
     transition:
       'width 0.25s ease'
+  },
+
+  waiting: {
+    color: '#8f98a8',
+    fontSize: '13px',
+    marginTop: '12px',
+    lineHeight: '1.5'
   },
 
   predictionBox: {
@@ -780,7 +743,9 @@ const styles = {
     padding: '20px',
     borderRadius: '16px',
     background:
-      'rgba(0,0,0,0.25)'
+      'rgba(0,0,0,0.25)',
+    border:
+      '1px solid rgba(255,255,255,0.08)'
   },
 
   predictionTitle: {
@@ -793,21 +758,24 @@ const styles = {
     display: 'flex',
     justifyContent:
       'space-between',
+    alignItems: 'center',
     gap: '20px',
-    padding: '9px 0',
+    padding: '10px 0',
     borderBottom:
       '1px solid rgba(255,255,255,0.1)'
   },
 
-  tickStatus: {
-    marginTop: '15px',
-    color: '#8fc1ff',
-    fontSize: '14px'
-  },
-
   error: {
     color: '#ff8d8d',
-    fontSize: '16px',
-    marginTop: '10px'
+    fontSize: '15px',
+    marginTop: '10px',
+    marginBottom: '10px'
+  },
+
+  tickInfo: {
+    marginTop: '18px',
+    color: '#7f8999',
+    fontSize: '13px',
+    textAlign: 'right'
   }
 };
