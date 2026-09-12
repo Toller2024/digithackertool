@@ -25,25 +25,44 @@ const allowedOrigins = [
   'https://www.digitalhackertool.vercel.app'
 ];
 
-app.use(helmet());
+/*
+ * Security headers
+ * Explicitly allow resources to be accessed
+ * across the Vercel → Render origin.
+ */
+app.use(
+  helmet({
+    crossOriginResourcePolicy: {
+      policy: 'cross-origin'
+    }
+  })
+);
 
+/*
+ * CORS
+ */
 app.use(cors({
   origin: function (origin, callback) {
+    // Allow requests without an Origin header
+    // such as health checks/server-to-server requests.
     if (!origin) {
       return callback(null, true);
     }
 
+    // Main production frontend
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
 
+    // Allow Vercel preview deployments
     if (
-      origin.endsWith('.vercel.app') &&
-      origin.startsWith('https://')
+      origin.startsWith('https://') &&
+      origin.endsWith('.vercel.app')
     ) {
       return callback(null, true);
     }
 
+    // Allow configured frontend URL
     if (
       process.env.FRONTEND_URL &&
       origin === process.env.FRONTEND_URL
@@ -58,6 +77,9 @@ app.use(cors({
   credentials: true
 }));
 
+/*
+ * Body / cookie middleware
+ */
 app.use(express.json());
 app.use(cookieParser());
 
@@ -66,32 +88,40 @@ app.use(cookieParser());
  * This allows the OAuth session to survive
  * the redirect from Deriv back to the frontend.
  */
-app.use(session({
-  secret: process.env.SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
 
-  store: MongoStore.create({
-    mongoUrl: process.env.MONGODB_URI,
-    collectionName: 'sessions',
-    ttl: 24 * 60 * 60
-  }),
+    store: MongoStore.create({
+      mongoUrl: process.env.MONGODB_URI,
+      collectionName: 'sessions',
+      ttl: 24 * 60 * 60
+    }),
 
-  cookie: {
-    secure: process.env.NODE_ENV === 'production',
-    httpOnly: true,
-    sameSite: process.env.NODE_ENV === 'production'
-      ? 'none'
-      : 'lax',
-    maxAge: 24 * 60 * 60 * 1000
-  }
-}));
+    cookie: {
+      secure: process.env.NODE_ENV === 'production',
+      httpOnly: true,
+      sameSite:
+        process.env.NODE_ENV === 'production'
+          ? 'none'
+          : 'lax',
+      maxAge: 24 * 60 * 60 * 1000
+    }
+  })
+);
 
-// Routes
+/*
+ * Routes
+ */
 app.use('/api/auth', authRoutes);
 app.use('/user', userRoutes);
 app.use('/ticks', tickRoutes);
 
+/*
+ * Health check
+ */
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -99,9 +129,22 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Connect to database and start server
-connectDB().then(() => {
-  app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
+/*
+ * Connect to database and start server
+ */
+connectDB()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(
+        `🚀 Server running on port ${PORT}`
+      );
+    });
+  })
+  .catch((error) => {
+    console.error(
+      '❌ Failed to connect to database:',
+      error
+    );
+
+    process.exit(1);
   });
-});
