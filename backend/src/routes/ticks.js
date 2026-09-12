@@ -25,19 +25,14 @@ router.get('/symbols', (req, res) => {
 router.get('/stream/:symbol', async (req, res) => {
   const { symbol } = req.params;
 
-  console.log('====================================');
   console.log(`🌐 SSE CLIENT CONNECTED: ${symbol}`);
-  console.log('Origin:', req.headers.origin || 'none');
-  console.log('====================================');
 
-  // SSE headers
   res.status(200);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
 
-  // Explicit CORS for EventSource
   const origin = req.headers.origin;
 
   if (
@@ -52,12 +47,11 @@ router.get('/stream/:symbol', async (req, res) => {
     res.setHeader('Vary', 'Origin');
   }
 
-  // Send headers immediately
   if (typeof res.flushHeaders === 'function') {
     res.flushHeaders();
   }
 
-  // Immediately tell EventSource that the stream is alive
+  // Tell the browser the SSE connection is alive.
   res.write(': connected\n\n');
 
   let api;
@@ -75,14 +69,13 @@ router.get('/stream/:symbol', async (req, res) => {
         return;
       }
 
+      const tick = response.tick;
+
+      console.log(
+        `📊 SSE TICK ${symbol}: ${tick.quote}`
+      );
+
       try {
-        const tick = response.tick;
-
-        console.log(
-          `📊 SSE TICK ${symbol}:`,
-          tick.quote
-        );
-
         res.write(
           `data: ${JSON.stringify(tick)}\n\n`
         );
@@ -99,15 +92,11 @@ router.get('/stream/:symbol', async (req, res) => {
       reqId
     });
 
-    // Keep SSE connection alive
     heartbeat = setInterval(() => {
       try {
         res.write(': heartbeat\n\n');
       } catch (error) {
-        console.error(
-          '❌ SSE HEARTBEAT ERROR:',
-          error?.message || String(error)
-        );
+        clearInterval(heartbeat);
       }
     }, 10000);
 
