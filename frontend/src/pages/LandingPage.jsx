@@ -8,8 +8,9 @@ import {
 
 export default function LandingPage() {
   const handleLogin = () => {
-    window.location.href =
-      'https://digithackertool-backend.onrender.com/api/auth/deriv';
+    // Start OAuth through the Vercel domain.
+    // Vercel proxies /api/* to the Render backend.
+    window.location.href = '/api/auth/deriv';
   };
 
   return (
