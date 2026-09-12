@@ -1,11 +1,18 @@
 import express from 'express';
 import crypto from 'crypto';
+import mongoose from 'mongoose';
 import User from '../models/User.js';
 
 const router = express.Router();
 
-const DERIV_AUTH_URL = 'https://auth.deriv.com/oauth2/auth';
-const DERIV_TOKEN_URL = 'https://auth.deriv.com/oauth2/token';
+const DERIV_AUTH_URL =
+  'https://auth.deriv.com/oauth2/auth';
+
+const DERIV_TOKEN_URL =
+  'https://auth.deriv.com/oauth2/token';
+
+const OAUTH_STATE_TTL_MS =
+  10 * 60 * 1000;
 
 const getRedirectUri = () =>
   process.env.DERIV_CALLBACK_URL ||
@@ -15,9 +22,14 @@ const getFrontendUrl = () =>
   process.env.FRONTEND_URL ||
   'https://digitalhackertool.vercel.app';
 
+const getOAuthStatesCollection = () =>
+  mongoose.connection.collection('oauth_states');
+
 // Generate PKCE verifier
 function generateCodeVerifier() {
-  return crypto.randomBytes(64).toString('base64url');
+  return crypto
+    .randomBytes(64)
+    .toString('base64url');
 }
 
 // Generate PKCE challenge
@@ -29,79 +41,97 @@ function generateCodeChallenge(verifier) {
 }
 
 // Start Deriv OAuth login
-router.get('/deriv', (req, res) => {
+router.get('/deriv', async (req, res) => {
   try {
-    const clientId = process.env.DERIV_CLIENT_ID;
+    const clientId =
+      process.env.DERIV_CLIENT_ID;
 
     if (!clientId) {
-      console.error('DERIV_CLIENT_ID is missing');
+      console.error(
+        'DERIV_CLIENT_ID is missing'
+      );
 
       return res.redirect(
         `${getFrontendUrl()}/?error=missing_client_id`
       );
     }
 
-    const state = crypto.randomBytes(32).toString('hex');
-    const codeVerifier = generateCodeVerifier();
-    const codeChallenge = generateCodeChallenge(codeVerifier);
+    const state =
+      crypto.randomBytes(32).toString('hex');
 
-    // Store PKCE values in the server session
-    req.session.derivOAuth = {
-      state,
-      codeVerifier
-    };
+    const codeVerifier =
+      generateCodeVerifier();
 
-    // Diagnostic log
-    console.log('OAUTH SESSION CREATED:', {
-      sessionID: req.sessionID,
-      hasOAuthSession: !!req.session.derivOAuth
+    const codeChallenge =
+      generateCodeChallenge(codeVerifier);
+
+    const oauthStates =
+      getOAuthStatesCollection();
+
+    // Remove expired OAuth transactions
+    await oauthStates.deleteMany({
+      createdAt: {
+        $lt: new Date(
+          Date.now() - OAUTH_STATE_TTL_MS
+        )
+      }
     });
 
-    const authUrl = new URL(DERIV_AUTH_URL);
+    // Store OAuth data independently of Express session
+    await oauthStates.insertOne({
+      state,
+      codeVerifier,
+      createdAt: new Date()
+    });
 
-    authUrl.searchParams.set('response_type', 'code');
-    authUrl.searchParams.set('client_id', clientId);
+    console.log(
+      'OAUTH TRANSACTION CREATED:',
+      {
+        stateStored: true
+      }
+    );
+
+    const authUrl =
+      new URL(DERIV_AUTH_URL);
+
+    authUrl.searchParams.set(
+      'response_type',
+      'code'
+    );
+
+    authUrl.searchParams.set(
+      'client_id',
+      clientId
+    );
+
     authUrl.searchParams.set(
       'redirect_uri',
       getRedirectUri()
     );
-    authUrl.searchParams.set('scope', 'trade');
-    authUrl.searchParams.set('state', state);
+
+    authUrl.searchParams.set(
+      'scope',
+      'trade'
+    );
+
+    authUrl.searchParams.set(
+      'state',
+      state
+    );
+
     authUrl.searchParams.set(
       'code_challenge',
       codeChallenge
     );
+
     authUrl.searchParams.set(
       'code_challenge_method',
       'S256'
     );
 
-    /*
-     * IMPORTANT:
-     * Explicitly save the OAuth session before redirecting
-     * the browser to Deriv.
-     */
-    req.session.save((sessionError) => {
-      if (sessionError) {
-        console.error(
-          'OAuth session save error:',
-          sessionError
-        );
-
-        return res.redirect(
-          `${getFrontendUrl()}/?error=session_save_failed`
-        );
-      }
-
-      console.log(
-        'OAUTH SESSION SAVED:',
-        {
-          sessionID: req.sessionID
-        }
-      );
-
-      return res.redirect(authUrl.toString());
-    });
+    return res.redirect(
+      authUrl.toString()
+    );
   } catch (error) {
     console.error(
       'Deriv OAuth start error:',
@@ -115,279 +145,315 @@ router.get('/deriv', (req, res) => {
 });
 
 // Deriv OAuth callback
-router.get('/deriv/callback', async (req, res) => {
-  const {
-    code,
-    state,
-    error,
-    error_description
-  } = req.query;
-
-  if (error) {
-    console.error(
-      'Deriv OAuth error:',
+router.get(
+  '/deriv/callback',
+  async (req, res) => {
+    const {
+      code,
+      state,
       error,
-      error_description || ''
-    );
+      error_description
+    } = req.query;
 
-    return res.redirect(
-      `${getFrontendUrl()}/?error=deriv_denied`
-    );
-  }
+    const oauthStates =
+      getOAuthStatesCollection();
 
-  if (!code || !state) {
-    return res.redirect(
-      `${getFrontendUrl()}/?error=missing_oauth_data`
-    );
-  }
-
-  try {
-    // Diagnostic log
-    console.log('OAUTH CALLBACK SESSION:', {
-      sessionID: req.sessionID,
-      hasOAuthSession: !!req.session.derivOAuth
-    });
-
-    const oauthSession = req.session.derivOAuth;
-
-    if (!oauthSession) {
+    if (error) {
       console.error(
-        'OAuth session data missing'
+        'Deriv OAuth error:',
+        error,
+        error_description || ''
       );
 
-      return res.redirect(
-        `${getFrontendUrl()}/?error=session_expired`
-      );
-    }
-
-    // Verify state
-    if (state !== oauthSession.state) {
-      console.error(
-        'OAuth state mismatch'
-      );
-
-      delete req.session.derivOAuth;
-
-      return res.redirect(
-        `${getFrontendUrl()}/?error=state_mismatch`
-      );
-    }
-
-    const clientId =
-      process.env.DERIV_CLIENT_ID;
-
-    if (!clientId) {
-      throw new Error(
-        'DERIV_CLIENT_ID is missing'
-      );
-    }
-
-    // Exchange authorization code for access token
-    const tokenResponse = await fetch(
-      DERIV_TOKEN_URL,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type':
-            'application/x-www-form-urlencoded'
-        },
-        body: new URLSearchParams({
-          grant_type:
-            'authorization_code',
-          client_id: clientId,
-          code,
-          redirect_uri:
-            getRedirectUri(),
-          code_verifier:
-            oauthSession.codeVerifier
-        })
+      if (state) {
+        await oauthStates.deleteOne({
+          state
+        });
       }
-    );
 
-    const tokenData =
-      await tokenResponse.json();
-
-    if (
-      !tokenResponse.ok ||
-      !tokenData.access_token
-    ) {
-      console.error(
-        'Deriv token exchange failed:',
-        tokenData
-      );
-
-      throw new Error(
-        'Token exchange failed'
+      return res.redirect(
+        `${getFrontendUrl()}/?error=deriv_denied`
       );
     }
 
-    const accessToken =
-      tokenData.access_token;
-
-    // Get the authenticated Deriv account
-    const accountResponse =
-      await fetch(
-        'https://api.derivws.com/trading/v1/options/accounts',
-        {
-          method: 'GET',
-          headers: {
-            Authorization:
-              `Bearer ${accessToken}`,
-            'Content-Type':
-              'application/json'
-          }
-        }
-      );
-
-    const accountData =
-      await accountResponse.json();
-
-    if (!accountResponse.ok) {
-      console.error(
-        'Deriv account request failed:',
-        accountData
-      );
-
-      throw new Error(
-        'Could not retrieve Deriv account'
+    if (!code || !state) {
+      return res.redirect(
+        `${getFrontendUrl()}/?error=missing_oauth_data`
       );
     }
 
-    console.log(
-      'Deriv OAuth successful'
-    );
+    try {
+      // Retrieve the OAuth transaction from MongoDB
+      const oauthTransaction =
+        await oauthStates.findOne({
+          state
+        });
 
-    // Try to determine the primary account
-    const accounts =
-      accountData.accounts ||
-      accountData.data ||
-      [];
+      if (!oauthTransaction) {
+        console.error(
+          'OAuth transaction not found or expired'
+        );
 
-    const primaryAccount =
-      Array.isArray(accounts) &&
-      accounts.length > 0
-        ? accounts[0]
-        : null;
+        return res.redirect(
+          `${getFrontendUrl()}/?error=session_expired`
+        );
+      }
 
-    const loginid =
-      primaryAccount?.loginid ||
-      primaryAccount?.account_id ||
-      'deriv_user';
+      const createdAt =
+        new Date(
+          oauthTransaction.createdAt
+        ).getTime();
 
-    const currency =
-      primaryAccount?.currency ||
-      'USD';
+      const transactionAge =
+        Date.now() - createdAt;
 
-    const email =
-      primaryAccount?.email ||
-      `deriv_${loginid}@oauth.local`;
+      if (
+        !Number.isFinite(transactionAge) ||
+        transactionAge > OAUTH_STATE_TTL_MS
+      ) {
+        await oauthStates.deleteOne({
+          _id: oauthTransaction._id
+        });
 
-    let user =
-      await User.findOne({
-        loginid
+        console.error(
+          'OAuth transaction expired'
+        );
+
+        return res.redirect(
+          `${getFrontendUrl()}/?error=session_expired`
+        );
+      }
+
+      // Delete immediately so the transaction cannot be reused
+      await oauthStates.deleteOne({
+        _id: oauthTransaction._id
       });
 
-    if (!user) {
-      const uid =
-        `user_${loginid}_${Date.now()}`;
+      const clientId =
+        process.env.DERIV_CLIENT_ID;
 
-      user = new User({
-        uid,
-        email,
-        name: loginid,
-        loginid,
-        deriv: {
+      if (!clientId) {
+        throw new Error(
+          'DERIV_CLIENT_ID is missing'
+        );
+      }
+
+      // Exchange authorization code for access token
+      const tokenResponse =
+        await fetch(
+          DERIV_TOKEN_URL,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type':
+                'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+              grant_type:
+                'authorization_code',
+
+              client_id:
+                clientId,
+
+              code,
+
+              redirect_uri:
+                getRedirectUri(),
+
+              code_verifier:
+                oauthTransaction.codeVerifier
+            })
+          }
+        );
+
+      const tokenData =
+        await tokenResponse.json();
+
+      if (
+        !tokenResponse.ok ||
+        !tokenData.access_token
+      ) {
+        console.error(
+          'Deriv token exchange failed:',
+          tokenData
+        );
+
+        throw new Error(
+          'Token exchange failed'
+        );
+      }
+
+      const accessToken =
+        tokenData.access_token;
+
+      // Get the authenticated Deriv account
+      const accountResponse =
+        await fetch(
+          'https://api.derivws.com/trading/v1/options/accounts',
+          {
+            method: 'GET',
+            headers: {
+              Authorization:
+                `Bearer ${accessToken}`,
+
+              'Content-Type':
+                'application/json'
+            }
+          }
+        );
+
+      const accountData =
+        await accountResponse.json();
+
+      if (!accountResponse.ok) {
+        console.error(
+          'Deriv account request failed:',
+          accountData
+        );
+
+        throw new Error(
+          'Could not retrieve Deriv account'
+        );
+      }
+
+      console.log(
+        'Deriv OAuth successful'
+      );
+
+      // Determine the primary account
+      const accounts =
+        accountData.accounts ||
+        accountData.data ||
+        [];
+
+      const primaryAccount =
+        Array.isArray(accounts) &&
+        accounts.length > 0
+          ? accounts[0]
+          : null;
+
+      const loginid =
+        primaryAccount?.loginid ||
+        primaryAccount?.account_id ||
+        'deriv_user';
+
+      const currency =
+        primaryAccount?.currency ||
+        'USD';
+
+      const email =
+        primaryAccount?.email ||
+        `deriv_${loginid}@oauth.local`;
+
+      let user =
+        await User.findOne({
+          loginid
+        });
+
+      if (!user) {
+        const uid =
+          `user_${loginid}_${Date.now()}`;
+
+        user = new User({
+          uid,
+          email,
+          name: loginid,
           loginid,
-          linkedAt: new Date(),
+
+          deriv: {
+            loginid,
+            linkedAt: new Date(),
+            currency,
+            token: accessToken
+          },
+
+          tokens: [
+            {
+              token: accessToken,
+              account: loginid,
+              currency
+            }
+          ],
+
+          lastLogin: new Date()
+        });
+      } else {
+        user.lastLogin =
+          new Date();
+
+        user.deriv = {
+          loginid,
+
+          linkedAt:
+            user.deriv?.linkedAt ||
+            new Date(),
+
           currency,
           token: accessToken
-        },
-        tokens: [
+        };
+
+        user.tokens = [
           {
             token: accessToken,
             account: loginid,
             currency
           }
-        ],
-        lastLogin: new Date()
-      });
-    } else {
-      user.lastLogin =
-        new Date();
+        ];
+      }
 
-      user.deriv = {
-        loginid,
-        linkedAt:
-          user.deriv?.linkedAt ||
-          new Date(),
-        currency,
-        token: accessToken
-      };
+      await user.save();
 
-      user.tokens = [
-        {
-          token: accessToken,
-          account: loginid,
-          currency
-        }
-      ];
-    }
+      // Create the normal application session
+      req.session.userId =
+        user._id;
 
-    await user.save();
+      req.session.uid =
+        user.uid;
 
-    // Create application session
-    req.session.userId =
-      user._id;
+      req.session.save(
+        (sessionError) => {
+          if (sessionError) {
+            console.error(
+              'Application session save error:',
+              sessionError
+            );
 
-    req.session.uid =
-      user.uid;
+            return res.redirect(
+              `${getFrontendUrl()}/?error=session_save_failed`
+            );
+          }
 
-    // Remove temporary OAuth data
-    delete req.session.derivOAuth;
+          console.log(
+            'APPLICATION SESSION SAVED:',
+            {
+              sessionID:
+                req.sessionID,
 
-    req.session.save(
-      (sessionError) => {
-        if (sessionError) {
-          console.error(
-            'Session save error:',
-            sessionError
+              userId:
+                String(user._id),
+
+              uid:
+                user.uid
+            }
           );
 
           return res.redirect(
-            `${getFrontendUrl()}/?error=session_save_failed`
+            `${getFrontendUrl()}/dashboard`
           );
         }
+      );
+    } catch (error) {
+      console.error(
+        'Deriv OAuth callback error:',
+        error
+      );
 
-        console.log(
-          'APPLICATION SESSION SAVED:',
-          {
-            sessionID:
-              req.sessionID,
-            userId:
-              String(user._id),
-            uid:
-              user.uid
-          }
-        );
-
-        return res.redirect(
-          `${getFrontendUrl()}/dashboard`
-        );
-      }
-    );
-  } catch (error) {
-    console.error(
-      'Deriv OAuth callback error:',
-      error
-    );
-
-    delete req.session.derivOAuth;
-
-    return res.redirect(
-      `${getFrontendUrl()}/?error=auth_failed`
-    );
+      return res.redirect(
+        `${getFrontendUrl()}/?error=auth_failed`
+      );
+    }
   }
-});
+);
 
 // Get current user
 router.get('/me', async (req, res) => {
@@ -411,14 +477,14 @@ router.get('/me', async (req, res) => {
       });
     }
 
-    res.json(user);
+    return res.json(user);
   } catch (error) {
     console.error(
       'Get user error:',
       error
     );
 
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Server error'
     });
   }
@@ -434,7 +500,7 @@ router.post('/logout', (req, res) => {
         });
       }
 
-      res.json({
+      return res.json({
         success: true
       });
     }
