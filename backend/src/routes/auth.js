@@ -51,7 +51,7 @@ router.get('/deriv', (req, res) => {
       codeVerifier
     };
 
-    // TEMPORARY DIAGNOSTIC LOG
+    // Diagnostic log
     console.log('OAUTH SESSION CREATED:', {
       sessionID: req.sessionID,
       hasOAuthSession: !!req.session.derivOAuth
@@ -76,11 +76,39 @@ router.get('/deriv', (req, res) => {
       'S256'
     );
 
-    res.redirect(authUrl.toString());
-  } catch (error) {
-    console.error('Deriv OAuth start error:', error);
+    /*
+     * IMPORTANT:
+     * Explicitly save the OAuth session before redirecting
+     * the browser to Deriv.
+     */
+    req.session.save((sessionError) => {
+      if (sessionError) {
+        console.error(
+          'OAuth session save error:',
+          sessionError
+        );
 
-    res.redirect(
+        return res.redirect(
+          `${getFrontendUrl()}/?error=session_save_failed`
+        );
+      }
+
+      console.log(
+        'OAUTH SESSION SAVED:',
+        {
+          sessionID: req.sessionID
+        }
+      );
+
+      return res.redirect(authUrl.toString());
+    });
+  } catch (error) {
+    console.error(
+      'Deriv OAuth start error:',
+      error
+    );
+
+    return res.redirect(
       `${getFrontendUrl()}/?error=oauth_start_failed`
     );
   }
@@ -114,7 +142,7 @@ router.get('/deriv/callback', async (req, res) => {
   }
 
   try {
-    // TEMPORARY DIAGNOSTIC LOG
+    // Diagnostic log
     console.log('OAUTH CALLBACK SESSION:', {
       sessionID: req.sessionID,
       hasOAuthSession: !!req.session.derivOAuth
@@ -123,7 +151,9 @@ router.get('/deriv/callback', async (req, res) => {
     const oauthSession = req.session.derivOAuth;
 
     if (!oauthSession) {
-      console.error('OAuth session data missing');
+      console.error(
+        'OAuth session data missing'
+      );
 
       return res.redirect(
         `${getFrontendUrl()}/?error=session_expired`
@@ -132,7 +162,9 @@ router.get('/deriv/callback', async (req, res) => {
 
     // Verify state
     if (state !== oauthSession.state) {
-      console.error('OAuth state mismatch');
+      console.error(
+        'OAuth state mismatch'
+      );
 
       delete req.session.derivOAuth;
 
@@ -141,10 +173,13 @@ router.get('/deriv/callback', async (req, res) => {
       );
     }
 
-    const clientId = process.env.DERIV_CLIENT_ID;
+    const clientId =
+      process.env.DERIV_CLIENT_ID;
 
     if (!clientId) {
-      throw new Error('DERIV_CLIENT_ID is missing');
+      throw new Error(
+        'DERIV_CLIENT_ID is missing'
+      );
     }
 
     // Exchange authorization code for access token
@@ -157,16 +192,20 @@ router.get('/deriv/callback', async (req, res) => {
             'application/x-www-form-urlencoded'
         },
         body: new URLSearchParams({
-          grant_type: 'authorization_code',
+          grant_type:
+            'authorization_code',
           client_id: clientId,
           code,
-          redirect_uri: getRedirectUri(),
-          code_verifier: oauthSession.codeVerifier
+          redirect_uri:
+            getRedirectUri(),
+          code_verifier:
+            oauthSession.codeVerifier
         })
       }
     );
 
-    const tokenData = await tokenResponse.json();
+    const tokenData =
+      await tokenResponse.json();
 
     if (
       !tokenResponse.ok ||
@@ -177,22 +216,28 @@ router.get('/deriv/callback', async (req, res) => {
         tokenData
       );
 
-      throw new Error('Token exchange failed');
+      throw new Error(
+        'Token exchange failed'
+      );
     }
 
-    const accessToken = tokenData.access_token;
+    const accessToken =
+      tokenData.access_token;
 
     // Get the authenticated Deriv account
-    const accountResponse = await fetch(
-      'https://api.derivws.com/trading/v1/options/accounts',
-      {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
+    const accountResponse =
+      await fetch(
+        'https://api.derivws.com/trading/v1/options/accounts',
+        {
+          method: 'GET',
+          headers: {
+            Authorization:
+              `Bearer ${accessToken}`,
+            'Content-Type':
+              'application/json'
+          }
         }
-      }
-    );
+      );
 
     const accountData =
       await accountResponse.json();
@@ -237,9 +282,10 @@ router.get('/deriv/callback', async (req, res) => {
       primaryAccount?.email ||
       `deriv_${loginid}@oauth.local`;
 
-    let user = await User.findOne({
-      loginid
-    });
+    let user =
+      await User.findOne({
+        loginid
+      });
 
     if (!user) {
       const uid =
@@ -266,7 +312,8 @@ router.get('/deriv/callback', async (req, res) => {
         lastLogin: new Date()
       });
     } else {
-      user.lastLogin = new Date();
+      user.lastLogin =
+        new Date();
 
       user.deriv = {
         loginid,
@@ -289,28 +336,45 @@ router.get('/deriv/callback', async (req, res) => {
     await user.save();
 
     // Create application session
-    req.session.userId = user._id;
-    req.session.uid = user.uid;
+    req.session.userId =
+      user._id;
+
+    req.session.uid =
+      user.uid;
 
     // Remove temporary OAuth data
     delete req.session.derivOAuth;
 
-    req.session.save((sessionError) => {
-      if (sessionError) {
-        console.error(
-          'Session save error:',
-          sessionError
+    req.session.save(
+      (sessionError) => {
+        if (sessionError) {
+          console.error(
+            'Session save error:',
+            sessionError
+          );
+
+          return res.redirect(
+            `${getFrontendUrl()}/?error=session_save_failed`
+          );
+        }
+
+        console.log(
+          'APPLICATION SESSION SAVED:',
+          {
+            sessionID:
+              req.sessionID,
+            userId:
+              String(user._id),
+            uid:
+              user.uid
+          }
         );
 
         return res.redirect(
-          `${getFrontendUrl()}/?error=session_save_failed`
+          `${getFrontendUrl()}/dashboard`
         );
       }
-
-      res.redirect(
-        `${getFrontendUrl()}/dashboard`
-      );
-    });
+    );
   } catch (error) {
     console.error(
       'Deriv OAuth callback error:',
@@ -319,7 +383,7 @@ router.get('/deriv/callback', async (req, res) => {
 
     delete req.session.derivOAuth;
 
-    res.redirect(
+    return res.redirect(
       `${getFrontendUrl()}/?error=auth_failed`
     );
   }
@@ -334,9 +398,12 @@ router.get('/me', async (req, res) => {
   }
 
   try {
-    const user = await User.findById(
-      req.session.userId
-    ).select('-deriv.token -tokens');
+    const user =
+      await User.findById(
+        req.session.userId
+      ).select(
+        '-deriv.token -tokens'
+      );
 
     if (!user) {
       return res.status(401).json({
@@ -359,17 +426,19 @@ router.get('/me', async (req, res) => {
 
 // Logout
 router.post('/logout', (req, res) => {
-  req.session.destroy((error) => {
-    if (error) {
-      return res.status(500).json({
-        error: 'Logout failed'
+  req.session.destroy(
+    (error) => {
+      if (error) {
+        return res.status(500).json({
+          error: 'Logout failed'
+        });
+      }
+
+      res.json({
+        success: true
       });
     }
-
-    res.json({
-      success: true
-    });
-  });
+  );
 });
 
 export default router;
