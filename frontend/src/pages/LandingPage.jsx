@@ -1,14 +1,20 @@
 import { motion } from 'framer-motion';
-import { TrendingUp, Zap, Shield, BarChart3 } from 'lucide-react';
+import {
+  TrendingUp,
+  Zap,
+  Shield,
+  BarChart3
+} from 'lucide-react';
 
 export default function LandingPage() {
   const handleLogin = () => {
-    window.location.href = '/api/auth/deriv';
+    window.location.href =
+      'https://digithackertool-backend.onrender.com/api/auth/deriv';
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-800 text-white">
-      
+
       {/* Hero Section */}
       <div className="container mx-auto px-4 py-20">
         <motion.div
@@ -45,23 +51,23 @@ export default function LandingPage() {
           {[
             {
               icon: <Zap className="w-8 h-8" />,
-              title: "Automated Scanning",
-              text: "Continuously analyzes digit patterns across volatility indices."
+              title: 'Automated Scanning',
+              text: 'Continuously analyzes digit patterns across volatility indices.'
             },
             {
               icon: <TrendingUp className="w-8 h-8" />,
-              title: "Real-time Signals",
-              text: "Get instant Even/Odd, Digit Match, and Over/Under predictions."
+              title: 'Real-time Signals',
+              text: 'Get instant Even/Odd, Digit Match, and Over/Under predictions.'
             },
             {
               icon: <BarChart3 className="w-8 h-8" />,
-              title: "AI Confidence Logic",
-              text: "Signals backed by historical probability analysis."
+              title: 'AI Confidence Logic',
+              text: 'Signals backed by historical probability analysis.'
             },
             {
               icon: <Shield className="w-8 h-8" />,
-              title: "Secure OAuth",
-              text: "Safe integration with your Deriv account via official OAuth."
+              title: 'Secure OAuth',
+              text: 'Safe integration with your Deriv account via official OAuth.'
             }
           ].map((feature, idx) => (
             <motion.div
