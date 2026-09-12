@@ -2,41 +2,61 @@ import WebSocket from 'ws';
 
 class DerivAPI {
   constructor(appId) {
+    // Kept for compatibility with the rest of the backend.
+    // Public market-data WebSocket does not require the App ID.
     this.appId = appId;
+
     this.ws = null;
     this.requestId = 0;
+
+    // req_id -> callback
     this.callbacks = new Map();
+
+    // req_id -> Deriv subscription ID
     this.subscriptions = new Map();
   }
 
   connect() {
     return new Promise((resolve, reject) => {
-      if (!this.appId) {
-        return reject(
-          new Error('DERIV_APP_ID is missing')
-        );
-      }
-
+      /*
+       * PUBLIC DERIV MARKET-DATA WEBSOCKET
+       *
+       * No App ID
+       * No OAuth
+       * No account authentication
+       *
+       * Used only for public market data / tick streams.
+       */
       const wsUrl =
-        `wss://ws.derivws.com/websockets/v3?app_id=${this.appId}`;
+        'wss://ws.binaryws.com/websockets/v3';
 
-      console.log('=================================');
-      console.log('Connecting to Deriv WebSocket');
+      console.log('========================================');
+      console.log('Connecting to Deriv public market data');
       console.log(wsUrl);
-      console.log('=================================');
+      console.log('========================================');
 
       this.ws = new WebSocket(wsUrl);
 
       let settled = false;
 
+      // ---------------------------------------------
+      // CONNECTION OPEN
+      // ---------------------------------------------
+
       this.ws.on('open', () => {
-        console.log('✅ DERIV WEBSOCKET CONNECTED');
+        console.log(
+          '✅ DERIV PUBLIC WEBSOCKET CONNECTED'
+        );
 
         if (!settled) {
           settled = true;
           resolve();
         }
       });
+
+      // ---------------------------------------------
+      // MESSAGES
+      // ---------------------------------------------
 
       this.ws.on('message', (data) => {
         try {
@@ -45,7 +65,7 @@ class DerivAPI {
           );
 
           console.log(
-            'DERIV:',
+            'DERIV MESSAGE:',
             response.msg_type || 'unknown',
             response.req_id || ''
           );
@@ -56,7 +76,7 @@ class DerivAPI {
 
           if (response.error) {
             console.error(
-              '❌ DERIV ERROR:',
+              '❌ DERIV API ERROR:',
               JSON.stringify(response.error)
             );
 
@@ -71,31 +91,47 @@ class DerivAPI {
 
               callback(response);
 
-              this.callbacks.delete(reqId);
+              /*
+               * Keep subscription callback only if
+               * this was already a live subscription.
+               */
+              if (
+                !response.subscription
+              ) {
+                this.callbacks.delete(reqId);
+              }
             }
 
             return;
           }
 
           // -----------------------------------------
-          // TICK
+          // TICK MESSAGE
           // -----------------------------------------
 
           if (response.msg_type === 'tick') {
             const reqId = response.req_id;
 
-            // Save subscription ID
+            // Save Deriv subscription ID
             if (
               reqId &&
               response.subscription &&
               response.subscription.id
             ) {
+              const subscriptionId =
+                response.subscription.id;
+
               this.subscriptions.set(
                 reqId,
-                response.subscription.id
+                subscriptionId
+              );
+
+              console.log(
+                `📡 Subscription active: ${subscriptionId}`
               );
             }
 
+            // Send tick to subscriber
             if (
               reqId &&
               this.callbacks.has(reqId)
@@ -110,7 +146,7 @@ class DerivAPI {
           }
 
           // -----------------------------------------
-          // OTHER RESPONSE
+          // NORMAL DERIV RESPONSE
           // -----------------------------------------
 
           if (
@@ -124,6 +160,7 @@ class DerivAPI {
                 response.req_id
               );
 
+            // Save subscription ID
             if (
               response.subscription &&
               response.subscription.id
@@ -136,30 +173,57 @@ class DerivAPI {
 
             callback(response);
 
-            this.callbacks.delete(
-              response.req_id
-            );
+            /*
+             * Non-streaming requests are removed
+             * after receiving their response.
+             */
+            if (
+              response.msg_type !== 'tick'
+            ) {
+              this.callbacks.delete(
+                response.req_id
+              );
+            }
           }
 
         } catch (error) {
           console.error(
-            '❌ DERIV MESSAGE ERROR:',
-            error.message
+            '❌ DERIV MESSAGE PARSE ERROR:',
+            error?.message || String(error)
           );
         }
       });
 
+      // ---------------------------------------------
+      // WEBSOCKET ERROR
+      // ---------------------------------------------
+
       this.ws.on('error', (error) => {
         console.error(
           '❌ DERIV WEBSOCKET ERROR:',
-          error.message
+          error?.message || String(error)
+        );
+
+        console.error(
+          '❌ DERIV WEBSOCKET ERROR CODE:',
+          error?.code || 'none'
         );
 
         if (!settled) {
           settled = true;
-          reject(error);
+
+          reject(
+            new Error(
+              error?.message ||
+              'Deriv WebSocket connection failed'
+            )
+          );
         }
       });
+
+      // ---------------------------------------------
+      // WEBSOCKET CLOSED
+      // ---------------------------------------------
 
       this.ws.on('close', (code, reason) => {
         console.log(
@@ -172,6 +236,10 @@ class DerivAPI {
       });
     });
   }
+
+  // -----------------------------------------------
+  // SEND REQUEST
+  // -----------------------------------------------
 
   send(request) {
     return new Promise((resolve, reject) => {
@@ -215,11 +283,19 @@ class DerivAPI {
     });
   }
 
+  // -----------------------------------------------
+  // AUTHORIZE
+  // -----------------------------------------------
+
   async authorize(token) {
     return this.send({
       authorize: token
     });
   }
+
+  // -----------------------------------------------
+  // BALANCE
+  // -----------------------------------------------
 
   async getAccountBalance(token) {
     await this.authorize(token);
@@ -230,6 +306,10 @@ class DerivAPI {
     });
   }
 
+  // -----------------------------------------------
+  // ACCOUNT LIST
+  // -----------------------------------------------
+
   async getAccountList(token) {
     await this.authorize(token);
 
@@ -237,6 +317,10 @@ class DerivAPI {
       account_list: 1
     });
   }
+
+  // -----------------------------------------------
+  // SUBSCRIBE TO TICKS
+  // -----------------------------------------------
 
   subscribeTicks(symbol, callback) {
     if (
@@ -251,19 +335,32 @@ class DerivAPI {
     const reqId = ++this.requestId;
 
     console.log(
-      `📡 SUBSCRIBING TO ${symbol}`
+      '========================================'
+    );
+
+    console.log(
+      `📡 SUBSCRIBING TO DERIV TICKS: ${symbol}`
     );
 
     console.log(
       `📡 REQUEST ID: ${reqId}`
     );
 
+    console.log(
+      '========================================'
+    );
+
+    /*
+     * This is the standard Deriv tick
+     * subscription request.
+     */
     const request = {
       ticks: symbol,
       subscribe: 1,
       req_id: reqId
     };
 
+    // Store callback before sending request
     this.callbacks.set(
       reqId,
       callback
@@ -273,14 +370,28 @@ class DerivAPI {
       this.ws.send(
         JSON.stringify(request)
       );
+
+      console.log(
+        `✅ Tick subscription request sent: ${symbol}`
+      );
+
     } catch (error) {
       this.callbacks.delete(reqId);
+
+      console.error(
+        '❌ Failed to send tick request:',
+        error?.message || String(error)
+      );
 
       throw error;
     }
 
     return reqId;
   }
+
+  // -----------------------------------------------
+  // UNSUBSCRIBE
+  // -----------------------------------------------
 
   unsubscribe(reqId) {
     const subscriptionId =
@@ -299,12 +410,13 @@ class DerivAPI {
         );
 
         console.log(
-          `🛑 UNSUBSCRIBED: ${subscriptionId}`
+          `🛑 DERIV SUBSCRIPTION FORGOTTEN: ${subscriptionId}`
         );
+
       } catch (error) {
         console.error(
-          'Unsubscribe error:',
-          error.message
+          '❌ Unsubscribe error:',
+          error?.message || String(error)
         );
       }
     }
@@ -313,18 +425,22 @@ class DerivAPI {
     this.subscriptions.delete(reqId);
   }
 
+  // -----------------------------------------------
+  // DISCONNECT
+  // -----------------------------------------------
+
   disconnect() {
     if (this.ws) {
       console.log(
-        'Closing Deriv WebSocket'
+        'Closing Deriv public WebSocket...'
       );
 
       try {
         this.ws.close();
       } catch (error) {
         console.error(
-          'Close error:',
-          error.message
+          '❌ WebSocket close error:',
+          error?.message || String(error)
         );
       }
 
