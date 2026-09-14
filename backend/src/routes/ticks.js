@@ -10,7 +10,9 @@ const router = express.Router();
 const activeConnections = new Map();
 
 /*
+ * ==========================================
  * AVAILABLE SYMBOLS
+ * ==========================================
  */
 router.get('/symbols', (req, res) => {
   res.json([
@@ -29,7 +31,9 @@ router.get('/symbols', (req, res) => {
 });
 
 /*
+ * ==========================================
  * TEST ROUTE
+ * ==========================================
  */
 router.get('/test', (req, res) => {
   console.log('🟢 TICKS TEST ROUTE HIT');
@@ -42,71 +46,70 @@ router.get('/test', (req, res) => {
 });
 
 /*
- * EXTRACT THE FINAL DIGIT
+ * ==========================================
+ * EXTRACT FINAL DISPLAYED DIGIT
+ * ==========================================
  *
- * Deriv provides pip_size.
+ * IMPORTANT:
+ *
+ * We intentionally DO NOT use:
+ *
+ * Number(quote).toFixed(pip_size)
+ *
+ * because toFixed() can add trailing zeros.
  *
  * Example:
  *
- * 4873.313 with pip_size 3
- * => final digit = 3
+ * 48403.326
  *
- * 48372.0306 with pip_size 4
- * => final digit = 6
+ * must remain:
+ *
+ * 48403.326
+ *
+ * and therefore the final digit is:
+ *
+ * 6
+ *
+ * NOT:
+ *
+ * 48403.3260 -> 0
+ *
+ * ==========================================
  */
 function extractLastDigit(tick) {
   if (!tick) {
     return null;
   }
 
-  const quote = Number(tick.quote);
+  const rawQuote = tick.quote;
 
-  if (!Number.isFinite(quote)) {
+  if (
+    rawQuote === null ||
+    rawQuote === undefined
+  ) {
     return null;
   }
 
-  const pipSize = Number(tick.pip_size);
-
   /*
-   * Use Deriv's pip_size whenever available.
+   * Convert the original quote value to text.
    */
-  if (
-    Number.isInteger(pipSize) &&
-    pipSize >= 0 &&
-    pipSize <= 10
-  ) {
-    const fixedQuote =
-      Math.abs(quote).toFixed(pipSize);
+  const text = String(rawQuote).trim();
 
-    if (pipSize > 0) {
-      const decimalPart =
-        fixedQuote.split('.')[1];
-
-      if (
-        decimalPart &&
-        decimalPart.length > 0
-      ) {
-        return Number(
-          decimalPart[
-            decimalPart.length - 1
-          ]
-        );
-      }
-    }
-
-    return (
-      Math.abs(
-        Math.trunc(quote)
-      ) % 10
-    );
+  if (!text) {
+    return null;
   }
 
   /*
-   * Fallback if pip_size is unavailable.
+   * Handle decimal quotes.
+   *
+   * Example:
+   *
+   * 48403.326
+   *
+   * decimalPart = "326"
+   *
+   * final digit = 6
    */
-  const text =
-    String(Math.abs(quote));
-
   if (text.includes('.')) {
     const decimalPart =
       text.split('.')[1];
@@ -115,26 +118,52 @@ function extractLastDigit(tick) {
       decimalPart &&
       decimalPart.length > 0
     ) {
-      return Number(
+      const lastCharacter =
         decimalPart[
           decimalPart.length - 1
-        ]
-      );
+        ];
+
+      const digit =
+        Number(lastCharacter);
+
+      if (
+        Number.isInteger(digit) &&
+        digit >= 0 &&
+        digit <= 9
+      ) {
+        return digit;
+      }
     }
+  }
+
+  /*
+   * Fallback for whole-number quotes.
+   *
+   * Example:
+   *
+   * 48403 -> 3
+   */
+  const number = Number(text);
+
+  if (!Number.isFinite(number)) {
+    return null;
   }
 
   return (
     Math.abs(
-      Math.trunc(quote)
+      Math.trunc(number)
     ) % 10
   );
 }
 
 /*
- * SAVE TICK
+ * ==========================================
+ * SAVE TICK TO MONGODB
+ * ==========================================
  *
- * MongoDB failure must not stop the live
+ * MongoDB failure must NOT stop the live
  * Deriv stream.
+ * ==========================================
  */
 async function saveTick(tick) {
   try {
@@ -142,7 +171,8 @@ async function saveTick(tick) {
       return;
     }
 
-    const symbol = tick.symbol;
+    const symbol =
+      tick.symbol;
 
     const quote =
       Number(tick.quote);
@@ -153,6 +183,9 @@ async function saveTick(tick) {
     const digit =
       extractLastDigit(tick);
 
+    /*
+     * Validate tick before saving.
+     */
     if (
       !symbol ||
       !Number.isFinite(quote) ||
@@ -169,6 +202,10 @@ async function saveTick(tick) {
       return;
     }
 
+    /*
+     * Save only once for each
+     * symbol + epoch combination.
+     */
     await Tick.updateOne(
       {
         symbol,
@@ -194,6 +231,10 @@ async function saveTick(tick) {
       `💾 TICK SAVED ${symbol}: quote=${quote} digit=${digit} epoch=${epoch}`
     );
   } catch (error) {
+    /*
+     * Database problems must not
+     * kill the live stream.
+     */
     console.error(
       '⚠️ MONGODB TICK SAVE FAILED:',
       error?.message ||
@@ -203,7 +244,9 @@ async function saveTick(tick) {
 }
 
 /*
- * SSE STREAM
+ * ==========================================
+ * SSE LIVE TICK STREAM
+ * ==========================================
  */
 router.get(
   '/stream/:symbol',
@@ -232,7 +275,9 @@ router.get(
     console.log('');
 
     /*
+     * ========================================
      * SSE HEADERS
+     * ========================================
      */
     res.status(200);
 
@@ -257,7 +302,9 @@ router.get(
     );
 
     /*
+     * ========================================
      * CORS
+     * ========================================
      */
     const origin =
       req.headers.origin;
@@ -301,7 +348,9 @@ router.get(
     }
 
     /*
-     * Initial SSE event.
+     * ========================================
+     * INITIAL SSE EVENT
+     * ========================================
      */
     res.write(
       `event: connected\ndata: ${JSON.stringify({
@@ -316,7 +365,9 @@ router.get(
     let closed = false;
 
     /*
+     * ========================================
      * CLEANUP
+     * ========================================
      */
     const cleanup = () => {
       if (closed) {
@@ -329,6 +380,9 @@ router.get(
         `🔴 CLEANING UP SSE CONNECTION: ${symbol}`
       );
 
+      /*
+       * Stop heartbeat.
+       */
       if (heartbeat) {
         clearInterval(
           heartbeat
@@ -337,10 +391,16 @@ router.get(
         heartbeat = null;
       }
 
+      /*
+       * Get active connection.
+       */
       const connection =
         activeConnections.get(res);
 
       if (connection) {
+        /*
+         * Unsubscribe from Deriv.
+         */
         try {
           connection.api.unsubscribe(
             connection.reqId
@@ -353,6 +413,9 @@ router.get(
           );
         }
 
+        /*
+         * Disconnect WebSocket.
+         */
         try {
           connection.api.disconnect();
         } catch (error) {
@@ -363,6 +426,9 @@ router.get(
           );
         }
 
+        /*
+         * Remove from active connections.
+         */
         activeConnections.delete(
           res
         );
@@ -370,7 +436,9 @@ router.get(
     };
 
     /*
+     * ========================================
      * BROWSER DISCONNECTED
+     * ========================================
      */
     req.on('close', () => {
       console.log(
@@ -381,7 +449,9 @@ router.get(
     });
 
     /*
+     * ========================================
      * START DERIV CONNECTION
+     * ========================================
      */
     try {
       console.log(
@@ -399,12 +469,17 @@ router.get(
       );
 
       /*
-       * SUBSCRIBE TO TICKS
+       * ======================================
+       * SUBSCRIBE TO DERIV TICKS
+       * ======================================
        */
       reqId =
         api.subscribeTicks(
           symbol,
           async (response) => {
+            /*
+             * Ignore invalid messages.
+             */
             if (
               !response ||
               !response.tick
@@ -415,12 +490,19 @@ router.get(
             const tick =
               response.tick;
 
+            /*
+             * ==================================
+             * LIVE QUOTE
+             * ==================================
+             */
             console.log(
               `📊 SSE TICK ${symbol}: ${tick.quote}`
             );
 
             /*
-             * Calculate actual final digit.
+             * ==================================
+             * EXTRACT FINAL DIGIT
+             * ==================================
              */
             const digit =
               extractLastDigit(
@@ -431,29 +513,41 @@ router.get(
               `🔢 TICK DIGIT ${symbol}: ${digit}`
             );
 
+            /*
+             * Don't process anything after
+             * the connection has closed.
+             */
             if (closed) {
               return;
             }
 
             /*
-             * ======================================
+             * ==================================
              * SAVE HISTORICAL MEMORY
-             * ======================================
+             * ==================================
              */
-            await saveTick(tick);
+            await saveTick(
+              tick
+            );
 
             /*
-             * ======================================
-             * PROCESS LEARNING
-             * ======================================
+             * ==================================
+             * PROCESS LEARNING SYSTEM
+             * ==================================
              *
-             * This does:
+             * Flow:
              *
-             * previous prediction
-             *       ↓
-             * WIN / LOSS
-             *       ↓
-             * new prediction for NEXT tick
+             * Previous prediction
+             *          ↓
+             * Compare with actual digit
+             *          ↓
+             *       WIN / LOSS
+             *          ↓
+             * Update learning memory
+             *          ↓
+             * Generate next prediction
+             *
+             * ==================================
              */
             try {
               if (
@@ -470,6 +564,11 @@ router.get(
                       Number(tick.epoch)
                   });
 
+                /*
+                 * =================================
+                 * LEARNING RESULT
+                 * =================================
+                 */
                 if (
                   learning?.resolved
                 ) {
@@ -481,6 +580,11 @@ router.get(
                   );
                 }
 
+                /*
+                 * =================================
+                 * NEW PREDICTION
+                 * =================================
+                 */
                 if (
                   learning?.prediction
                 ) {
@@ -494,8 +598,8 @@ router.get(
               }
             } catch (error) {
               /*
-               * Learning failure must never
-               * kill the live stream.
+               * Learning failure must NEVER
+               * kill the live Deriv stream.
                */
               console.error(
                 `⚠️ LEARNING PROCESS ERROR ${symbol}:`,
@@ -505,13 +609,13 @@ router.get(
             }
 
             /*
-             * ======================================
-             * SEND TICK TO FRONTEND
-             * ======================================
+             * ==================================
+             * SEND ORIGINAL TICK TO FRONTEND
+             * ==================================
              *
-             * We continue sending the original
-             * Deriv tick object so the existing
-             * Dashboard remains compatible.
+             * We keep the original tick object
+             * so the current Dashboard remains
+             * compatible.
              */
             try {
               res.write(
@@ -532,7 +636,9 @@ router.get(
       );
 
       /*
-       * Save active connection.
+       * ========================================
+       * SAVE ACTIVE CONNECTION
+       * ========================================
        */
       activeConnections.set(
         res,
@@ -543,7 +649,11 @@ router.get(
       );
 
       /*
+       * ========================================
        * HEARTBEAT
+       * ========================================
+       *
+       * Keeps SSE alive through proxies.
        */
       heartbeat =
         setInterval(() => {
@@ -566,25 +676,36 @@ router.get(
           }
         }, 10000);
     } catch (error) {
+      /*
+       * ========================================
+       * STREAM START ERROR
+       * ========================================
+       */
       console.error('');
+
       console.error(
         '=========================================='
       );
+
       console.error(
         '❌ TICK STREAM ERROR'
       );
+
       console.error(
         '=========================================='
       );
+
       console.error(
         'Symbol:',
         symbol
       );
+
       console.error(
         'Error:',
         error?.message ||
           String(error)
       );
+
       console.error('');
 
       cleanup();
