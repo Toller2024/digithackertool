@@ -6,7 +6,7 @@ import Prediction from '../models/Prediction.js';
  * DIGIT PREDICTION ENGINE
  * ==========================================
  *
- * The engine uses two kinds of memory:
+ * Uses:
  *
  * 1. MARKET MEMORY
  *    - Historical digit frequency
@@ -14,26 +14,32 @@ import Prediction from '../models/Prediction.js';
  *
  * 2. PREDICTION PERFORMANCE MEMORY
  *    - Previous WIN / LOSS results
- *    - How well a predicted digit performed
- *      after a particular current digit
+ *    - Performance of predicted digits
  *
- * The final probability remains an empirical
- * estimate. It is NEVER artificially raised to
- * 55%, 75%, 95%, etc.
+ * The probabilities are empirical.
+ * No artificial confidence floor is used.
  *
  * IMPORTANT:
- * This is a statistical model, not a guarantee
- * of the next Deriv digit.
+ * This is a statistical model.
+ * It cannot guarantee the next digit.
  */
 
 /*
- * Maximum number of historical ticks used.
+ * ==========================================
+ * HISTORICAL MEMORY SIZE
+ * ==========================================
+ *
+ * The database can contain more than 10,000
+ * ticks per symbol.
+ *
+ * The prediction engine will use the latest
+ * 10,000 historical ticks.
  */
-const HISTORY_LIMIT = 500;
+const HISTORY_LIMIT = 10000;
 
 /*
- * Maximum number of resolved predictions used
- * for performance memory.
+ * Maximum number of resolved predictions
+ * used for performance memory.
  */
 const PERFORMANCE_LIMIT = 500;
 
@@ -45,26 +51,24 @@ const DIGIT_COUNT = 10;
 /*
  * Equal baseline probability.
  *
- * With 10 possible digits:
- *
  * 1 / 10 = 10%
  */
 const BASELINE_PROBABILITY = 0.10;
 
 /*
- * Minimum history required.
+ * Minimum history required before prediction.
  */
 const MIN_HISTORY = 30;
 
 /*
- * Minimum evidence required before prediction
- * performance memory strongly influences a
- * candidate.
+ * Minimum performance samples required
+ * before performance memory influences
+ * a candidate.
  */
 const MIN_PERFORMANCE_SAMPLES = 5;
 
 /*
- * Weight assigned to market transition memory.
+ * Weight assigned to transition memory.
  */
 const TRANSITION_WEIGHT = 0.60;
 
@@ -74,17 +78,16 @@ const TRANSITION_WEIGHT = 0.60;
 const GLOBAL_WEIGHT = 0.25;
 
 /*
- * Weight assigned to prediction-performance
- * memory.
+ * Weight assigned to prediction performance.
  */
 const PERFORMANCE_WEIGHT = 0.15;
 
 /*
  * Signal thresholds.
  *
- * These are real probability thresholds.
+ * These are actual probability thresholds.
  *
- * There is NO artificial confidence floor.
+ * No artificial confidence floor is applied.
  */
 const ENTRY_PROBABILITY = 0.15;
 const WAIT_PROBABILITY = 0.12;
@@ -113,8 +116,8 @@ function validDigit(value) {
  * SELECT BEST DIGIT
  * ==========================================
  *
- * If probabilities tie, use the candidate with
- * stronger supporting evidence.
+ * If probabilities tie, use supporting
+ * evidence to make the selection deterministic.
  */
 function selectBestDigit(
   probabilities,
@@ -258,20 +261,16 @@ function calculateGlobalProbabilities(
  *
  * Current digit = 7
  *
- * Historical observations:
+ * Historical:
  *
  * 7 -> 3
  * 7 -> 5
  * 7 -> 3
  * 7 -> 3
  *
- * Therefore:
+ * Then:
  *
  * P(3 | 7) = 75%
- *
- * We use the actual historical transition
- * distribution without artificially increasing
- * it.
  */
 function calculateTransitionProbabilities(
   ticks,
@@ -346,26 +345,6 @@ function calculateTransitionProbabilities(
  * ==========================================
  * PREDICTION PERFORMANCE MEMORY
  * ==========================================
- *
- * We inspect previously resolved predictions
- * for this symbol.
- *
- * We particularly care about:
- *
- * currentDigit -> predictedDigit
- *
- * Example:
- *
- * Current digit = 5
- * Predicted digit = 9
- *
- * We check how previous predictions of:
- *
- * 5 -> 9
- *
- * performed.
- *
- * This memory is used conservatively.
  */
 async function calculatePerformanceProbabilities(
   symbol,
@@ -381,7 +360,7 @@ async function calculatePerformanceProbabilities(
     Array(DIGIT_COUNT).fill(0);
 
   /*
-   * Get only resolved predictions.
+   * Get resolved predictions only.
    */
   const predictions =
     await Prediction.find({
@@ -433,10 +412,7 @@ async function calculatePerformanceProbabilities(
   }
 
   /*
-   * Start with neutral baseline.
-   *
-   * This prevents a digit with no performance
-   * history from automatically becoming bad.
+   * Neutral baseline.
    */
   const probabilities =
     Array(DIGIT_COUNT).fill(
@@ -472,21 +448,6 @@ async function calculatePerformanceProbabilities(
  * ==========================================
  * COMBINE MARKET + PERFORMANCE MEMORY
  * ==========================================
- *
- * Market evidence:
- *
- * 60% transition
- * 25% global frequency
- *
- * Performance evidence:
- *
- * 15%
- *
- * If there is no transition history, we use
- * global history as the market component.
- *
- * Performance memory only becomes meaningful
- * after enough samples exist.
  */
 function combineProbabilities({
   globalProbabilities,
@@ -505,6 +466,10 @@ function combineProbabilities({
   ) {
     let marketProbability;
 
+    /*
+     * If transition evidence exists,
+     * combine transition + global frequency.
+     */
     if (
       transitionCount > 0
     ) {
@@ -521,16 +486,15 @@ function combineProbabilities({
       /*
        * No transition evidence.
        *
-       * Use global history as the market
-       * estimate.
+       * Use global history.
        */
       marketProbability =
         globalProbabilities[digit];
     }
 
     /*
-     * Only use performance memory when there
-     * are enough observations for that candidate.
+     * Performance memory is only used when
+     * enough evidence exists.
      */
     const performanceSampleCount =
       Number(
@@ -541,11 +505,6 @@ function combineProbabilities({
       performanceSampleCount >=
       MIN_PERFORMANCE_SAMPLES
     ) {
-      /*
-       * Rebalance the weights because the
-       * market component above contains the
-       * transition/global evidence.
-       */
       probabilities[digit] =
         (
           marketProbability *
@@ -559,22 +518,13 @@ function combineProbabilities({
           PERFORMANCE_WEIGHT
         );
     } else {
-      /*
-       * No reliable performance history for
-       * this candidate.
-       *
-       * Use market probability unchanged.
-       */
       probabilities[digit] =
         marketProbability;
     }
   }
 
   /*
-   * Normalize the final distribution.
-   *
-   * This guarantees the ten candidate
-   * probabilities represent one distribution.
+   * Normalize final distribution.
    */
   const total =
     probabilities.reduce(
@@ -642,8 +592,11 @@ export async function predictNextDigit(
 
   /*
    * ========================================
-   * LOAD TICK MEMORY
+   * LOAD HISTORICAL MEMORY
    * ========================================
+   *
+   * Up to 10,000 ticks are now available
+   * to the prediction model.
    */
   const ticks =
     await getHistoricalTicks(
@@ -765,7 +718,7 @@ export async function predictNextDigit(
 
   /*
    * ========================================
-   * PREDICTION PERFORMANCE MEMORY
+   * PERFORMANCE MEMORY
    * ========================================
    */
   const performance =
@@ -801,8 +754,6 @@ export async function predictNextDigit(
    * ========================================
    * SUPPORT COUNTS
    * ========================================
-   *
-   * Used only to make ties deterministic.
    */
   const supportCounts =
     Array(DIGIT_COUNT).fill(0);
@@ -854,10 +805,6 @@ export async function predictNextDigit(
 
     /*
      * Raw probability.
-     *
-     * Example:
-     *
-     * 0.17 = 17%
      */
     probability:
       best.probability,
@@ -878,6 +825,10 @@ export async function predictNextDigit(
     strategy:
       'digit-transition-performance',
 
+    /*
+     * This will now grow until the model
+     * reaches the 10,000-tick history window.
+     */
     historySize:
       ticks.length,
 
