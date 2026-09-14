@@ -3,7 +3,7 @@ import DerivAPI from '../services/derivAPI.js';
 import Tick from '../models/Tick.js';
 import {
   processTickForLearning
-} from '../services/learningService.js';
+} from '../services/LearningService.js';
 
 const router = express.Router();
 
