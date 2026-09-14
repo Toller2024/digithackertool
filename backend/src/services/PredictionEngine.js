@@ -3,16 +3,20 @@ import Prediction from '../models/Prediction.js';
 
 /*
  * ==========================================
- * ADAPTIVE DIGIT PREDICTION ENGINE
+ * ADAPTIVE MULTI-SCALE DIGIT ENGINE
  * ==========================================
  *
- * Learns from:
+ * The engine learns from:
  *
  * 1. Global digit frequency
- * 2. Current-digit transitions
- * 3. Repeated 3-digit patterns
- * 4. Historical WIN/LOSS results
- * 5. WIN/LOSS results for the SAME pattern
+ * 2. Current digit transitions
+ * 3. 2-digit patterns
+ * 4. 3-digit patterns
+ * 5. 4-digit patterns
+ * 6. 5-digit patterns
+ * 7. 6-digit patterns
+ * 8. Historical WIN/LOSS performance
+ * 9. Exact-pattern WIN/LOSS performance
  *
  * IMPORTANT:
  * This is a statistical model.
@@ -34,12 +38,22 @@ const DIGIT_COUNT = 10;
 
 const MIN_HISTORY = 30;
 
-const PATTERN_LENGTH = 3;
+
+/*
+ * Pattern lengths used simultaneously.
+ */
+const PATTERN_LENGTHS = [
+  2,
+  3,
+  4,
+  5,
+  6
+];
 
 
 /*
- * Pattern evidence does not become dominant
- * merely because one occurrence exists.
+ * Longer patterns require more evidence
+ * before they receive strong influence.
  */
 const PATTERN_PRIOR_STRENGTH = 10;
 
@@ -51,13 +65,13 @@ const TRANSITION_PRIOR_STRENGTH = 20;
 
 
 /*
- * Learning weights.
+ * Base learning weights.
  */
 const GLOBAL_WEIGHT = 0.20;
 
-const TRANSITION_WEIGHT = 0.35;
+const TRANSITION_WEIGHT = 0.30;
 
-const PATTERN_WEIGHT = 0.30;
+const PATTERN_WEIGHT = 0.40;
 
 
 /*
@@ -69,15 +83,23 @@ const PERFORMANCE_STRENGTH = 0.50;
 
 
 /*
- * Signal thresholds.
+ * Minimum probability for signal labels.
  *
- * Ten digits gives a rough 10% baseline.
- *
- * These thresholds do NOT alter probability.
+ * These do not modify probability.
  */
 const ENTRY_PROBABILITY = 0.15;
 
 const WAIT_PROBABILITY = 0.12;
+
+
+/*
+ * Strong disagreement protection.
+ *
+ * If the leading digit has very weak support
+ * compared with the alternatives, the engine
+ * can return WAIT instead of forcing ENTRY.
+ */
+const MIN_PATTERN_AGREEMENT = 2;
 
 
 /*
@@ -186,9 +208,9 @@ function calculateGlobalMemory(ticks) {
  * 7 -> 5
  * 7 -> 3
  *
- * Therefore:
+ * P(next=3 | current=7)
  *
- * P(3 | 7) = 2 / 3
+ * = 2/3
  */
 
 function calculateTransitionMemory(
@@ -256,191 +278,235 @@ function calculateTransitionMemory(
 
 /*
  * ==========================================
- * RECENT PATTERN MEMORY
+ * MULTI-SCALE PATTERN MEMORY
  * ==========================================
  *
- * Example:
+ * Builds:
  *
- * Current pattern:
+ * 2-digit context
+ * 3-digit context
+ * 4-digit context
+ * 5-digit context
+ * 6-digit context
  *
- * [7, 3, 7]
+ * Example current sequence:
  *
- * Historical occurrences:
+ * 7 3 7 2 5 8
  *
- * [7,3,7] -> 2
- * [7,3,7] -> 5
- * [7,3,7] -> 2
+ * 2-digit:
+ * 5 8
  *
- * Therefore:
+ * 3-digit:
+ * 2 5 8
  *
- * P(next=2 | 7,3,7) = 2/3
+ * 4-digit:
+ * 7 2 5 8
+ *
+ * 5-digit:
+ * 3 7 2 5 8
+ *
+ * 6-digit:
+ * 7 3 7 2 5 8
  */
 
 function calculatePatternMemory(ticks) {
-  const counts =
-    Array(DIGIT_COUNT).fill(0);
+  const results = {};
 
-  let total = 0;
-
-  const emptyResult = {
-    counts,
-    probabilities:
-      Array(DIGIT_COUNT).fill(0),
-    total,
-    pattern: []
-  };
-
-  if (
-    ticks.length <
-    PATTERN_LENGTH
+  for (
+    const length of PATTERN_LENGTHS
   ) {
-    return emptyResult;
-  }
+    results[length] = {
+      counts:
+        Array(DIGIT_COUNT).fill(0),
 
-  /*
-   * Current pattern.
-   */
-  const currentPattern =
-    ticks
-      .slice(
-        ticks.length -
-          PATTERN_LENGTH
-      )
-      .map(
-        tick =>
-          validDigit(
-            tick.digit
-          )
-      );
+      probabilities:
+        Array(DIGIT_COUNT).fill(0),
 
-  if (
-    currentPattern.length !==
-      PATTERN_LENGTH ||
-    currentPattern.some(
-      digit => digit === null
-    )
-  ) {
-    return {
-      ...emptyResult,
-      pattern: currentPattern
+      total: 0,
+
+      pattern: [],
+
+      reliability: 0
     };
   }
 
-  /*
-   * Search historical occurrences.
-   *
-   * We intentionally exclude the current
-   * live pattern occurrence.
-   */
-  for (
-    let i = 0;
-    i <
-      ticks.length -
-        PATTERN_LENGTH;
-    i++
-  ) {
-    let matches = true;
 
-    for (
-      let j = 0;
-      j < PATTERN_LENGTH;
-      j++
+  /*
+   * ========================================
+   * BUILD CURRENT PATTERNS
+   * ========================================
+   */
+
+  for (
+    const length of PATTERN_LENGTHS
+  ) {
+    if (
+      ticks.length < length
     ) {
-      const digit =
-        validDigit(
-          ticks[i + j]?.digit
+      continue;
+    }
+
+    const currentPattern =
+      ticks
+        .slice(
+          ticks.length - length
+        )
+        .map(
+          tick =>
+            validDigit(
+              tick.digit
+            )
         );
 
-      if (
-        digit !==
-        currentPattern[j]
+    results[length].pattern =
+      currentPattern;
+
+    if (
+      currentPattern.length !==
+        length ||
+      currentPattern.some(
+        digit => digit === null
+      )
+    ) {
+      continue;
+    }
+
+
+    /*
+     * ======================================
+     * SEARCH HISTORICAL OCCURRENCES
+     * ======================================
+     */
+
+    for (
+      let i = 0;
+      i <
+        ticks.length -
+          length;
+      i++
+    ) {
+      let matches = true;
+
+      for (
+        let j = 0;
+        j < length;
+        j++
       ) {
-        matches = false;
-        break;
+        const historicalDigit =
+          validDigit(
+            ticks[
+              i + j
+            ]?.digit
+          );
+
+        if (
+          historicalDigit !==
+          currentPattern[j]
+        ) {
+          matches = false;
+          break;
+        }
+      }
+
+      if (!matches) {
+        continue;
+      }
+
+
+      /*
+       * Digit immediately after pattern.
+       */
+      const next =
+        validDigit(
+          ticks[
+            i + length
+          ]?.digit
+        );
+
+      if (next === null) {
+        continue;
+      }
+
+
+      /*
+       * Never use the current occurrence
+       * as historical evidence.
+       */
+      if (
+        i + length >=
+        ticks.length - 1
+      ) {
+        continue;
+      }
+
+      results[length]
+        .counts[next]++;
+
+      results[length]
+        .total++;
+    }
+
+
+    /*
+     * ======================================
+     * CONVERT TO PROBABILITIES
+     * ======================================
+     */
+
+    if (
+      results[length].total > 0
+    ) {
+      for (
+        let digit = 0;
+        digit < DIGIT_COUNT;
+        digit++
+      ) {
+        results[length]
+          .probabilities[digit] =
+          results[length]
+            .counts[digit] /
+          results[length]
+            .total;
       }
     }
 
-    if (!matches) {
-      continue;
-    }
 
     /*
-     * The digit immediately after
-     * the historical pattern.
+     * Reliability increases with sample size.
+     *
+     * One occurrence = weak.
+     * Many occurrences = strong.
      */
-    const next =
-      validDigit(
-        ticks[
-          i + PATTERN_LENGTH
-        ]?.digit
+    results[length].reliability =
+      results[length].total /
+      (
+        results[length].total +
+        PATTERN_PRIOR_STRENGTH
       );
-
-    if (next === null) {
-      continue;
-    }
-
-    /*
-     * Never use the current final
-     * occurrence as historical evidence.
-     */
-    if (
-      i + PATTERN_LENGTH >=
-      ticks.length - 1
-    ) {
-      continue;
-    }
-
-    counts[next]++;
-    total++;
   }
 
-  const probabilities =
-    Array(DIGIT_COUNT).fill(0);
-
-  if (total > 0) {
-    for (
-      let digit = 0;
-      digit < DIGIT_COUNT;
-      digit++
-    ) {
-      probabilities[digit] =
-        counts[digit] / total;
-    }
-  }
-
-  return {
-    counts,
-    probabilities,
-    total,
-    pattern: currentPattern
-  };
+  return results;
 }
 
 
 /*
  * ==========================================
- * WIN/LOSS MEMORY
+ * WIN/LOSS PERFORMANCE MEMORY
  * ==========================================
  *
- * TWO LEVELS OF MEMORY:
+ * Two levels:
  *
- * LEVEL 1:
- * Same pattern + same predicted digit
+ * 1. EXACT PATTERN + PREDICTED DIGIT
  *
- * LEVEL 2:
- * Same current digit + same predicted digit
+ * 2. CURRENT DIGIT + PREDICTED DIGIT
  *
- * If exact-pattern evidence exists,
- * it takes priority.
- *
- * Otherwise the broader current-digit
- * history is used as fallback.
+ * Exact pattern evidence takes priority.
  */
 
 async function calculatePerformanceMemory(
   symbol,
   currentDigit,
-  currentPattern
+  currentPatterns
 ) {
   const contextCounts =
     Array(DIGIT_COUNT).fill(0);
@@ -450,6 +516,7 @@ async function calculatePerformanceMemory(
 
   const contextLosses =
     Array(DIGIT_COUNT).fill(0);
+
 
   const generalCounts =
     Array(DIGIT_COUNT).fill(0);
@@ -463,88 +530,8 @@ async function calculatePerformanceMemory(
 
   /*
    * ========================================
-   * EXACT PATTERN PERFORMANCE
-   * ========================================
-   *
-   * Example:
-   *
-   * Pattern = [7,3,7]
-   * Prediction = 2
-   *
-   * WIN
-   * WIN
-   * LOSS
-   *
-   * Context win rate = 2/3
-   */
-
-  const contextPredictions =
-    await Prediction.find({
-      symbol,
-
-      pattern:
-        currentPattern,
-
-      result: {
-        $in: [
-          'WIN',
-          'LOSS'
-        ]
-      },
-
-      predictedDigit: {
-        $gte: 0,
-        $lte: 9
-      }
-    })
-      .sort({
-        resolvedAt: -1
-      })
-      .limit(
-        PERFORMANCE_LIMIT
-      )
-      .lean();
-
-
-  for (
-    const prediction of
-      contextPredictions
-  ) {
-    const digit =
-      validDigit(
-        prediction.predictedDigit
-      );
-
-    if (digit === null) {
-      continue;
-    }
-
-    contextCounts[digit]++;
-
-    if (
-      prediction.result ===
-      'WIN'
-    ) {
-      contextWins[digit]++;
-    }
-
-    if (
-      prediction.result ===
-      'LOSS'
-    ) {
-      contextLosses[digit]++;
-    }
-  }
-
-
-  /*
-   * ========================================
    * GENERAL CURRENT-DIGIT PERFORMANCE
    * ========================================
-   *
-   * This keeps older predictions useful,
-   * including records created before the
-   * pattern field was added.
    */
 
   const generalPredictions =
@@ -607,13 +594,128 @@ async function calculatePerformanceMemory(
 
   /*
    * ========================================
-   * SELECT PERFORMANCE SOURCE
+   * EXACT PATTERN PERFORMANCE
    * ========================================
    *
-   * Exact pattern evidence wins.
+   * Check all pattern lengths.
    *
-   * If no exact-pattern record exists
-   * for a digit, use general evidence.
+   * A prediction's stored pattern may
+   * contain the original 3-digit context.
+   *
+   * We therefore use the exact stored
+   * prediction pattern where available.
+   */
+
+  const patternStrings =
+    Object.values(
+      currentPatterns
+    )
+      .filter(
+        item =>
+          Array.isArray(
+            item.pattern
+          ) &&
+          item.pattern.length > 0 &&
+          item.pattern.every(
+            digit =>
+              validDigit(digit) !== null
+          )
+      )
+      .map(
+        item =>
+          item.pattern
+      );
+
+
+  /*
+   * Remove duplicate patterns.
+   */
+  const uniquePatterns =
+    patternStrings.filter(
+      (pattern, index, array) =>
+        index ===
+        array.findIndex(
+          other =>
+            JSON.stringify(
+              other
+            ) ===
+            JSON.stringify(
+              pattern
+            )
+        )
+    );
+
+
+  /*
+   * Query each exact current pattern.
+   */
+  for (
+    const pattern of
+      uniquePatterns
+  ) {
+    const predictions =
+      await Prediction.find({
+        symbol,
+
+        pattern,
+
+        result: {
+          $in: [
+            'WIN',
+            'LOSS'
+          ]
+        },
+
+        predictedDigit: {
+          $gte: 0,
+          $lte: 9
+        }
+      })
+        .sort({
+          resolvedAt: -1
+        })
+        .limit(
+          PERFORMANCE_LIMIT
+        )
+        .lean();
+
+
+    for (
+      const prediction of
+        predictions
+    ) {
+      const digit =
+        validDigit(
+          prediction.predictedDigit
+        );
+
+      if (digit === null) {
+        continue;
+      }
+
+      contextCounts[digit]++;
+
+      if (
+        prediction.result ===
+        'WIN'
+      ) {
+        contextWins[digit]++;
+      }
+
+      if (
+        prediction.result ===
+        'LOSS'
+      ) {
+        contextLosses[digit]++;
+      }
+    }
+  }
+
+
+  /*
+   * ========================================
+   * FINAL PERFORMANCE MEMORY
+   * ========================================
    */
 
   const counts =
@@ -629,7 +731,9 @@ async function calculatePerformanceMemory(
     Array(DIGIT_COUNT).fill(0);
 
   const sources =
-    Array(DIGIT_COUNT).fill('none');
+    Array(DIGIT_COUNT).fill(
+      'none'
+    );
 
 
   for (
@@ -637,6 +741,9 @@ async function calculatePerformanceMemory(
     digit < DIGIT_COUNT;
     digit++
   ) {
+    /*
+     * Exact pattern wins.
+     */
     if (
       contextCounts[digit] > 0
     ) {
@@ -650,8 +757,16 @@ async function calculatePerformanceMemory(
         contextLosses[digit];
 
       sources[digit] =
-        'pattern';
-    } else {
+        'exact-pattern';
+    }
+
+    /*
+     * Otherwise use broader
+     * current-digit performance.
+     */
+    else if (
+      generalCounts[digit] > 0
+    ) {
       counts[digit] =
         generalCounts[digit];
 
@@ -662,16 +777,18 @@ async function calculatePerformanceMemory(
         generalLosses[digit];
 
       sources[digit] =
-        generalCounts[digit] > 0
-          ? 'current-digit'
-          : 'none';
+        'current-digit';
     }
 
+
     /*
-     * Bayesian-style smoothing.
+     * Bayesian smoothing.
      *
-     * This prevents tiny samples such as
-     * 1/1 from becoming 100%.
+     * Prevents:
+     *
+     * 1/1 = 100%
+     *
+     * from being treated as certainty.
      *
      * Example:
      *
@@ -679,12 +796,9 @@ async function calculatePerformanceMemory(
      *
      * becomes:
      *
-     * (3 + 1) / (4 + 2)
+     * 4 / 6 = 66.67%
      *
-     * = 66.67%
-     *
-     * while still being recognized as
-     * positive evidence.
+     * It is still positive evidence.
      */
     if (
       counts[digit] > 0
@@ -719,7 +833,117 @@ async function calculatePerformanceMemory(
       generalPredictions.length,
 
     contextPredictions:
-      contextPredictions.length
+      Object.values(
+        currentPatterns
+      ).reduce(
+        (
+          total,
+          item
+        ) =>
+          total +
+          (
+            item.total > 0
+              ? 1
+              : 0
+          ),
+        0
+      )
+  };
+}
+
+
+/*
+ * ==========================================
+ * MULTI-SCALE PATTERN AGREEMENT
+ * ==========================================
+ *
+ * Count how many pattern lengths support
+ * each digit.
+ *
+ * Example:
+ *
+ * 2-digit -> 4
+ * 3-digit -> 4
+ * 4-digit -> 4
+ * 5-digit -> 7
+ * 6-digit -> 9
+ *
+ * Digit 4 has strong agreement.
+ */
+
+function calculatePatternAgreement(
+  patternMemories
+) {
+  const agreement =
+    Array(DIGIT_COUNT).fill(0);
+
+  const weightedAgreement =
+    Array(DIGIT_COUNT).fill(0);
+
+  for (
+    const length of PATTERN_LENGTHS
+  ) {
+    const memory =
+      patternMemories[length];
+
+    if (
+      !memory ||
+      memory.total <= 0
+    ) {
+      continue;
+    }
+
+
+    /*
+     * Find the strongest digit for
+     * this pattern length.
+     */
+    let bestDigit = 0;
+
+    let bestProbability = -1;
+
+    for (
+      let digit = 0;
+      digit < DIGIT_COUNT;
+      digit++
+    ) {
+      const probability =
+        memory.probabilities[
+          digit
+        ] ?? 0;
+
+      if (
+        probability >
+        bestProbability
+      ) {
+        bestProbability =
+          probability;
+
+        bestDigit =
+          digit;
+      }
+    }
+
+
+    /*
+     * Only count a pattern as agreement
+     * when it has meaningful evidence.
+     */
+    if (
+      bestProbability <= 0
+    ) {
+      continue;
+    }
+
+    agreement[bestDigit]++;
+
+    weightedAgreement[bestDigit] +=
+      memory.reliability;
+  }
+
+  return {
+    agreement,
+    weightedAgreement
   };
 }
 
@@ -728,27 +952,21 @@ async function calculatePerformanceMemory(
  * ==========================================
  * COMBINE MEMORY SOURCES
  * ==========================================
- *
- * Global + transition + pattern form the
- * market/context probability.
- *
- * WIN/LOSS memory then adjusts that estimate
- * according to historical performance.
  */
 
 function combineMemories({
   global,
   transition,
-  pattern,
+  patterns,
   performance
 }) {
-  const probabilities =
+  const base =
     Array(DIGIT_COUNT).fill(0);
 
 
   /*
    * ========================================
-   * EVIDENCE RELIABILITY
+   * TRANSITION RELIABILITY
    * ========================================
    */
 
@@ -759,18 +977,6 @@ function combineMemories({
       TRANSITION_PRIOR_STRENGTH
     );
 
-  const patternReliability =
-    pattern.total /
-    (
-      pattern.total +
-      PATTERN_PRIOR_STRENGTH
-    );
-
-
-  /*
-   * Pattern and transition weights are
-   * reduced when their sample sizes are small.
-   */
 
   const effectiveTransitionWeight =
     transition.total > 0
@@ -778,37 +984,177 @@ function combineMemories({
         transitionReliability
       : 0;
 
-  const effectivePatternWeight =
-    pattern.total > 0
-      ? PATTERN_WEIGHT *
-        patternReliability
-      : 0;
+
+  /*
+   * ========================================
+   * PATTERN WEIGHTS
+   * ========================================
+   *
+   * Each pattern gets a share of the
+   * pattern weight.
+   *
+   * Longer patterns are allowed to be
+   * powerful only when they have evidence.
+   */
+
+  const patternWeights = {};
+
+  let totalPatternWeight = 0;
+
+  for (
+    const length of PATTERN_LENGTHS
+  ) {
+    const memory =
+      patterns[length];
+
+    if (
+      !memory ||
+      memory.total <= 0
+    ) {
+      patternWeights[length] = 0;
+      continue;
+    }
+
+
+    /*
+     * Longer patterns receive slightly
+     * more specificity weight, but
+     * reliability controls their actual
+     * influence.
+     */
+    const specificity =
+      length /
+      6;
+
+
+    const weight =
+      memory.reliability *
+      specificity;
+
+
+    patternWeights[length] =
+      weight;
+
+    totalPatternWeight +=
+      weight;
+  }
 
 
   /*
-   * Whatever weight is not used by
-   * transition/pattern goes back to global.
-   *
-   * This prevents weak evidence from
-   * artificially increasing confidence.
+   * Normalize pattern shares.
    */
+
+  if (
+    totalPatternWeight > 0
+  ) {
+    for (
+      const length of
+        PATTERN_LENGTHS
+    ) {
+      patternWeights[length] =
+        (
+          patternWeights[length] /
+          totalPatternWeight
+        ) *
+        PATTERN_WEIGHT;
+    }
+  }
+
+
+  /*
+   * ========================================
+   * GLOBAL WEIGHT
+   * ========================================
+   */
+
+  const usedTransition =
+    effectiveTransitionWeight;
+
+  const usedPattern =
+    PATTERN_LENGTHS.reduce(
+      (
+        sum,
+        length
+      ) =>
+        sum +
+        (
+          patternWeights[length] ||
+          0
+        ),
+      0
+    );
+
 
   const effectiveGlobalWeight =
     Math.max(
       0,
       1 -
-      effectiveTransitionWeight -
-      effectivePatternWeight
+      usedTransition -
+      usedPattern
     );
 
 
   /*
    * ========================================
-   * BASE PROBABILITY
+   * BUILD BASE PROBABILITY
    * ========================================
    */
 
-  const baseProbabilities =
+  for (
+    let digit = 0;
+    digit < DIGIT_COUNT;
+    digit++
+  ) {
+    base[digit] =
+      (
+        global.probabilities[digit] *
+        effectiveGlobalWeight
+      );
+
+
+    if (
+      effectiveTransitionWeight > 0
+    ) {
+      base[digit] +=
+        transition.probabilities[
+          digit
+        ] *
+        effectiveTransitionWeight;
+    }
+
+
+    for (
+      const length of
+        PATTERN_LENGTHS
+    ) {
+      const weight =
+        patternWeights[length] ||
+        0;
+
+      if (
+        weight <= 0
+      ) {
+        continue;
+      }
+
+      base[digit] +=
+        (
+          patterns[length]
+            .probabilities[digit] ||
+          0
+        ) *
+        weight;
+    }
+  }
+
+
+  /*
+   * ========================================
+   * APPLY WIN/LOSS LEARNING
+   * ========================================
+   */
+
+  const probabilities =
     Array(DIGIT_COUNT).fill(0);
 
 
@@ -817,110 +1163,59 @@ function combineMemories({
     digit < DIGIT_COUNT;
     digit++
   ) {
-    const globalProbability =
-      global.probabilities[digit] ??
+    const samples =
+      performance.counts[digit] ||
       0;
 
-    const transitionProbability =
-      transition.probabilities[digit] ??
-      0;
-
-    const patternProbability =
-      pattern.probabilities[digit] ??
-      0;
-
-
-    baseProbabilities[digit] =
-      (
-        globalProbability *
-        effectiveGlobalWeight
-      ) +
-
-      (
-        transitionProbability *
-        effectiveTransitionWeight
-      ) +
-
-      (
-        patternProbability *
-        effectivePatternWeight
-      );
-  }
-
-
-  /*
-   * ========================================
-   * APPLY WIN/LOSS LEARNING
-   * ========================================
-   *
-   * Performance modifies the probability
-   * instead of replacing it.
-   *
-   * A digit with a strong historical WIN
-   * record gets a boost.
-   *
-   * A digit with repeated LOSS gets reduced.
-   *
-   * Sample reliability grows gradually.
-   */
-
-  for (
-    let digit = 0;
-    digit < DIGIT_COUNT;
-    digit++
-  ) {
-    const sampleCount =
-      performance.counts[digit] ?? 0;
 
     if (
-      sampleCount <= 0
+      samples <= 0
     ) {
       probabilities[digit] =
-        baseProbabilities[digit];
+        base[digit];
 
       continue;
     }
 
 
     const winRate =
-      performance.probabilities[digit] ??
-      0.5;
+      performance.probabilities[
+        digit
+      ];
 
 
     /*
-     * Reliability approaches 1 as the
-     * sample count becomes large.
+     * Reliability grows gradually.
      */
     const reliability =
-      sampleCount /
+      samples /
       (
-        sampleCount + 10
+        samples + 10
       );
 
 
     /*
-     * Convert win rate around the 50%
-     * midpoint into an adjustment.
-     *
      * 50% = neutral
-     * >50% = boost
-     * <50% = reduction
+     *
+     * >50% = positive adjustment
+     *
+     * <50% = negative adjustment
      */
-
-    const performanceAdjustment =
+    const adjustment =
       1 +
       (
         PERFORMANCE_STRENGTH *
         reliability *
         (
-          (winRate - 0.5) * 2
+          (winRate - 0.5) *
+          2
         )
       );
 
 
     probabilities[digit] =
-      baseProbabilities[digit] *
-      performanceAdjustment;
+      base[digit] *
+      adjustment;
   }
 
 
@@ -932,7 +1227,10 @@ function combineMemories({
 
   const total =
     probabilities.reduce(
-      (sum, value) =>
+      (
+        sum,
+        value
+      ) =>
         sum + value,
       0
     );
@@ -952,7 +1250,16 @@ function combineMemories({
   }
 
 
-  return probabilities;
+  return {
+    probabilities,
+
+    baseProbabilities:
+      base,
+
+    transitionReliability,
+
+    patternWeights
+  };
 }
 
 
@@ -980,12 +1287,14 @@ function selectBestDigit(
   ) {
     const probability =
       Number(
-        probabilities[digit] ?? 0
+        probabilities[digit] ||
+        0
       );
 
     const support =
       Number(
-        supportCounts[digit] ?? 0
+        supportCounts[digit] ||
+        0
       );
 
 
@@ -1033,14 +1342,24 @@ function selectBestDigit(
  */
 
 function getSignal(
-  probability
+  probability,
+  patternAgreement
 ) {
+  /*
+   * Strong probability but no pattern
+   * agreement should not automatically
+   * become ENTRY.
+   */
+
   if (
     probability >=
-    ENTRY_PROBABILITY
+      ENTRY_PROBABILITY &&
+    patternAgreement >=
+      MIN_PATTERN_AGREEMENT
   ) {
     return 'ENTRY';
   }
+
 
   if (
     probability >=
@@ -1048,6 +1367,7 @@ function getSignal(
   ) {
     return 'WAIT';
   }
+
 
   return 'NO_ENTRY';
 }
@@ -1104,7 +1424,7 @@ export async function predictNextDigit(
       signal: 'NO_ENTRY',
 
       strategy:
-        'adaptive-context-learning',
+        'adaptive-multi-scale-learning',
 
       historySize:
         ticks.length,
@@ -1115,16 +1435,19 @@ export async function predictNextDigit(
       pattern:
         [],
 
-      transitionSamples:
+      patternSamples:
         0,
 
-      patternSamples:
+      transitionSamples:
         0,
 
       performanceSamples:
         0,
 
       contextPerformanceSamples:
+        0,
+
+      patternAgreement:
         0,
 
       ready:
@@ -1169,7 +1492,7 @@ export async function predictNextDigit(
       signal: 'NO_ENTRY',
 
       strategy:
-        'adaptive-context-learning',
+        'adaptive-multi-scale-learning',
 
       historySize:
         ticks.length,
@@ -1180,16 +1503,19 @@ export async function predictNextDigit(
       pattern:
         [],
 
-      transitionSamples:
+      patternSamples:
         0,
 
-      patternSamples:
+      transitionSamples:
         0,
 
       performanceSamples:
         0,
 
       contextPerformanceSamples:
+        0,
+
+      patternAgreement:
         0,
 
       ready:
@@ -1228,13 +1554,25 @@ export async function predictNextDigit(
 
   /*
    * ========================================
-   * PATTERN MEMORY
+   * MULTI-SCALE PATTERNS
    * ========================================
    */
 
-  const pattern =
+  const patterns =
     calculatePatternMemory(
       ticks
+    );
+
+
+  /*
+   * ========================================
+   * PATTERN AGREEMENT
+   * ========================================
+   */
+
+  const patternAgreement =
+    calculatePatternAgreement(
+      patterns
     );
 
 
@@ -1248,7 +1586,7 @@ export async function predictNextDigit(
     await calculatePerformanceMemory(
       symbol,
       currentDigit,
-      pattern.pattern
+      patterns
     );
 
 
@@ -1258,13 +1596,20 @@ export async function predictNextDigit(
    * ========================================
    */
 
-  const probabilities =
+  const combined =
     combineMemories({
       global,
+
       transition,
-      pattern,
+
+      patterns,
+
       performance
     });
+
+
+  const probabilities =
+    combined.probabilities;
 
 
   /*
@@ -1285,14 +1630,24 @@ export async function predictNextDigit(
     supportCounts[digit] =
       global.counts[digit] +
       transition.counts[digit] +
-      pattern.counts[digit] +
       performance.counts[digit];
+
+
+    for (
+      const length of
+        PATTERN_LENGTHS
+    ) {
+      supportCounts[digit] +=
+        patterns[length]
+          ?.counts[digit] ||
+        0;
+    }
   }
 
 
   /*
    * ========================================
-   * SELECT
+   * SELECT BEST DIGIT
    * ========================================
    */
 
@@ -1311,8 +1666,50 @@ export async function predictNextDigit(
 
   const signal =
     getSignal(
-      best.probability
+      best.probability,
+
+      patternAgreement
+        .agreement[
+          best.digit
+        ] || 0
     );
+
+
+  /*
+   * ========================================
+   * SELECTED PERFORMANCE
+   * ========================================
+   */
+
+  const selectedPerformanceSamples =
+    performance.counts[
+      best.digit
+    ] || 0;
+
+
+  const selectedWins =
+    performance.wins[
+      best.digit
+    ] || 0;
+
+
+  const selectedLosses =
+    performance.losses[
+      best.digit
+    ] || 0;
+
+
+  const selectedWinRate =
+    selectedPerformanceSamples > 0
+      ? Number(
+          (
+            performance.probabilities[
+              best.digit
+            ] *
+            100
+          ).toFixed(2)
+        )
+      : null;
 
 
   /*
@@ -1341,21 +1738,28 @@ export async function predictNextDigit(
     signal,
 
     strategy:
-      'adaptive-context-learning',
+      'adaptive-multi-scale-learning',
 
     historySize:
       ticks.length,
 
     currentDigit,
 
+    /*
+     * Keep the 3-digit pattern as the
+     * primary stored pattern so it remains
+     * compatible with Prediction.js.
+     */
     pattern:
-      pattern.pattern,
+      patterns[3]?.pattern ||
+      [],
 
     transitionSamples:
       transition.total,
 
     patternSamples:
-      pattern.total,
+      patterns[3]?.total ||
+      0,
 
     performanceSamples:
       performance.totalPredictions,
@@ -1363,12 +1767,21 @@ export async function predictNextDigit(
     contextPerformanceSamples:
       performance.contextPredictions,
 
+    patternAgreement:
+      patternAgreement.agreement[
+        best.digit
+      ] || 0,
+
     ready:
       true,
 
+
     /*
-     * Detailed learning information.
+     * ======================================
+     * LEARNING SUMMARY
+     * ======================================
      */
+
     learning: {
       selectedDigit:
         best.digit,
@@ -1382,42 +1795,144 @@ export async function predictNextDigit(
         ),
 
       selectedDigitPerformanceSamples:
-        performance.counts[
-          best.digit
-        ],
+        selectedPerformanceSamples,
 
       selectedDigitWins:
-        performance.wins[
-          best.digit
-        ],
+        selectedWins,
 
       selectedDigitLosses:
-        performance.losses[
-          best.digit
-        ],
+        selectedLosses,
 
       selectedDigitWinRate:
-        performance.counts[
-          best.digit
-        ] > 0
-          ? Number(
-              (
-                performance.probabilities[
-                  best.digit
-                ] * 100
-              ).toFixed(2)
-            )
-          : null,
+        selectedWinRate,
 
       selectedDigitPerformanceSource:
         performance.sources[
           best.digit
-        ]
+        ],
+
+      patternAgreement:
+        patternAgreement.agreement[
+          best.digit
+        ] || 0,
+
+      weightedPatternAgreement:
+        Number(
+          (
+            patternAgreement
+              .weightedAgreement[
+                best.digit
+              ] || 0
+          ).toFixed(3)
+        )
     },
 
+
     /*
-     * Probability breakdown for every digit.
+     * ======================================
+     * MULTI-SCALE PATTERN INFORMATION
+     * ======================================
      */
+
+    patternAnalysis:
+      PATTERN_LENGTHS.map(
+        length => ({
+          length,
+
+          pattern:
+            patterns[length]
+              ?.pattern ||
+            [],
+
+          samples:
+            patterns[length]
+              ?.total ||
+            0,
+
+          reliability:
+            Number(
+              (
+                (
+                  patterns[length]
+                    ?.reliability ||
+                  0
+                ) *
+                100
+              ).toFixed(2)
+            ),
+
+          strongestDigit:
+            (() => {
+              const memory =
+                patterns[length];
+
+              if (
+                !memory ||
+                memory.total <= 0
+              ) {
+                return null;
+              }
+
+              let digit = 0;
+
+              let probability = -1;
+
+              for (
+                let d = 0;
+                d < DIGIT_COUNT;
+                d++
+              ) {
+                if (
+                  memory
+                    .probabilities[d] >
+                  probability
+                ) {
+                  probability =
+                    memory
+                      .probabilities[d];
+
+                  digit = d;
+                }
+              }
+
+              return digit;
+            })(),
+
+          strongestProbability:
+            (() => {
+              const memory =
+                patterns[length];
+
+              if (
+                !memory ||
+                memory.total <= 0
+              ) {
+                return null;
+              }
+
+              const highest =
+                Math.max(
+                  ...memory
+                    .probabilities
+                );
+
+              return Number(
+                (
+                  highest *
+                  100
+                ).toFixed(2)
+              );
+            })()
+        })
+      ),
+
+
+    /*
+     * ======================================
+     * ALL DIGIT PROBABILITIES
+     * ======================================
+     */
+
     probabilities:
       probabilities.map(
         (
@@ -1444,11 +1959,6 @@ export async function predictNextDigit(
               digit
             ],
 
-          patternSamples:
-            pattern.counts[
-              digit
-            ],
-
           performanceSamples:
             performance.counts[
               digit
@@ -1470,9 +1980,11 @@ export async function predictNextDigit(
             ] > 0
               ? Number(
                   (
-                    performance.probabilities[
-                      digit
-                    ] * 100
+                    performance
+                      .probabilities[
+                        digit
+                      ] *
+                    100
                   ).toFixed(2)
                 )
               : null,
@@ -1480,7 +1992,48 @@ export async function predictNextDigit(
           performanceSource:
             performance.sources[
               digit
-            ]
+            ],
+
+          patternAgreement:
+            patternAgreement
+              .agreement[
+                digit
+              ] || 0,
+
+          weightedPatternAgreement:
+            Number(
+              (
+                patternAgreement
+                  .weightedAgreement[
+                    digit
+                  ] || 0
+              ).toFixed(3)
+            ),
+
+          pattern2Samples:
+            patterns[2]
+              ?.counts[digit] ||
+            0,
+
+          pattern3Samples:
+            patterns[3]
+              ?.counts[digit] ||
+            0,
+
+          pattern4Samples:
+            patterns[4]
+              ?.counts[digit] ||
+            0,
+
+          pattern5Samples:
+            patterns[5]
+              ?.counts[digit] ||
+            0,
+
+          pattern6Samples:
+            patterns[6]
+              ?.counts[digit] ||
+            0
         })
       )
   };
