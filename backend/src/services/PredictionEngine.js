@@ -30,7 +30,7 @@ import Prediction from '../models/Prediction.js';
  * ==========================================
  */
 
-const HISTORY_LIMIT = 1000;
+const HISTORY_LIMIT = 10000;
 
 const PERFORMANCE_LIMIT = 500;
 
