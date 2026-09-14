@@ -15,13 +15,7 @@ const SYMBOLS = [
 ];
 
 /*
- * Convert a Deriv quote into its final displayed digit.
- *
- * Deriv historical tick responses provide the quote
- * and epoch. We determine the digit from the quote's
- * decimal representation instead of using:
- *
- * Math.floor(quote * 10) % 10
+ * Extract the final displayed digit from a quote.
  */
 function extractLastDigit(quote) {
   const text = String(quote);
@@ -36,9 +30,7 @@ function extractLastDigit(quote) {
     }
   }
 
-  return Math.abs(
-    Number(quote)
-  ) % 10;
+  return Math.abs(Number(quote)) % 10;
 }
 
 /*
@@ -79,6 +71,7 @@ function requestHistory(symbol, count) {
         count,
         end: 'latest',
         style: 'ticks',
+        subscribe: 0,
         req_id: 1
       };
 
@@ -92,13 +85,11 @@ function requestHistory(symbol, count) {
       console.log(
         '=========================================='
       );
+      console.log('Symbol:', symbol);
+      console.log('Requested:', count);
       console.log(
-        'Symbol:',
-        symbol
-      );
-      console.log(
-        'Requested:',
-        count
+        'Request:',
+        JSON.stringify(request)
       );
       console.log('');
 
@@ -142,8 +133,7 @@ function requestHistory(symbol, count) {
       }
 
       if (
-        response.msg_type !==
-        'history'
+        response.msg_type !== 'history'
       ) {
         return;
       }
@@ -197,6 +187,10 @@ function requestHistory(symbol, count) {
         });
       }
 
+      console.log(
+        `📥 Received ${ticks.length} historical ticks for ${symbol}`
+      );
+
       finish(
         resolve,
         ticks
@@ -229,9 +223,6 @@ function requestHistory(symbol, count) {
 
 /*
  * Save historical ticks into MongoDB.
- *
- * insertMany with ordered:false allows duplicate
- * ticks to be skipped while other records continue.
  */
 async function saveTicks(ticks) {
   if (!ticks.length) {
@@ -252,10 +243,8 @@ async function saveTicks(ticks) {
     inserted = result.length;
   } catch (error) {
     /*
-     * Duplicate-key errors are expected when the
-     * collector is run more than once.
-     *
-     * Other database errors should still be reported.
+     * Duplicate ticks can happen because
+     * symbol + epoch is unique.
      */
     if (
       error?.writeErrors &&
@@ -264,6 +253,17 @@ async function saveTicks(ticks) {
       inserted =
         ticks.length -
         error.writeErrors.length;
+    } else if (
+      error?.code === 11000
+    ) {
+      /*
+       * MongoDB duplicate-key error.
+       *
+       * The existing records are still valid.
+       */
+      console.log(
+        'ℹ️ Duplicate historical ticks detected. Skipping duplicates.'
+      );
     } else {
       throw error;
     }
@@ -273,7 +273,7 @@ async function saveTicks(ticks) {
 }
 
 /*
- * Count ticks already stored for a symbol.
+ * Count stored ticks for a symbol.
  */
 async function countSymbolTicks(symbol) {
   return Tick.countDocuments({
@@ -294,7 +294,7 @@ export async function collectHistoricalTicks(
     );
   }
 
-  const existing =
+  let existing =
     await countSymbolTicks(symbol);
 
   console.log('');
@@ -307,10 +307,7 @@ export async function collectHistoricalTicks(
   console.log(
     '=========================================='
   );
-  console.log(
-    'Symbol:',
-    symbol
-  );
+  console.log('Symbol:', symbol);
   console.log(
     'Existing ticks:',
     existing
@@ -335,13 +332,16 @@ export async function collectHistoricalTicks(
     };
   }
 
-  /*
-   * Request more than the missing amount because
-   * some historical records may already exist.
-   */
   const missing =
     target - existing;
 
+  /*
+   * Request slightly more than the missing
+   * amount to account for duplicates.
+   *
+   * Deriv supports up to 10,000 ticks per
+   * historical request.
+   */
   const requestCount =
     Math.min(
       missing + 100,
@@ -354,41 +354,71 @@ export async function collectHistoricalTicks(
       requestCount
     );
 
-  console.log(
-    `📥 Received ${ticks.length} historical ticks for ${symbol}`
-  );
-
   const added =
     await saveTicks(ticks);
 
-  const total =
+  existing =
     await countSymbolTicks(symbol);
 
   console.log('');
   console.log(
-    `💾 ${symbol} added: ${added}`
+    '=========================================='
   );
   console.log(
-    `📊 ${symbol} total: ${total}`
+    '💾 HISTORICAL DATA SAVED'
+  );
+  console.log(
+    '=========================================='
+  );
+  console.log('Symbol:', symbol);
+  console.log(
+    'Added:',
+    added
+  );
+  console.log(
+    'Total:',
+    existing
+  );
+  console.log(
+    'Target:',
+    target
   );
   console.log('');
 
   return {
     symbol,
-    existing,
+    existing: existing - added,
     added,
-    total,
-    complete: total >= target
+    total: existing,
+    complete: existing >= target
   };
 }
 
 /*
- * Collect historical data for every supported symbol.
+ * Collect historical data for all five symbols.
  */
 export async function collectAllHistoricalTicks(
   target = TARGET_TICKS_PER_SYMBOL
 ) {
   const results = [];
+
+  console.log('');
+  console.log(
+    '=========================================='
+  );
+  console.log(
+    '🚀 STARTING HISTORICAL MEMORY COLLECTION'
+  );
+  console.log(
+    '=========================================='
+  );
+  console.log(
+    `Target: ${target} ticks per symbol`
+  );
+  console.log(
+    `Total target: ${target * SYMBOLS.length} ticks`
+  );
+  console.log('');
 
   for (const symbol of SYMBOLS) {
     try {
@@ -402,7 +432,13 @@ export async function collectAllHistoricalTicks(
     } catch (error) {
       console.error('');
       console.error(
+        '=========================================='
+      );
+      console.error(
         `❌ HISTORICAL COLLECTION FAILED: ${symbol}`
+      );
+      console.error(
+        '=========================================='
       );
       console.error(
         error?.message ||
@@ -412,6 +448,9 @@ export async function collectAllHistoricalTicks(
 
       results.push({
         symbol,
+        total: 0,
+        added: 0,
+        complete: false,
         error:
           error?.message ||
           String(error)
@@ -424,21 +463,33 @@ export async function collectAllHistoricalTicks(
     '=========================================='
   );
   console.log(
-    '📚 HISTORICAL COLLECTION COMPLETE'
+    '📚 HISTORICAL COLLECTION SUMMARY'
   );
   console.log(
     '=========================================='
   );
 
   for (const result of results) {
-    console.log(
-      result.symbol,
-      '→',
-      result.total ??
-        'ERROR'
-    );
+    if (result.error) {
+      console.log(
+        `${result.symbol} → ERROR`
+      );
+    } else {
+      console.log(
+        `${result.symbol} → ${result.total} ticks`
+      );
+    }
   }
 
+  const completed =
+    results.filter(
+      result => result.complete
+    ).length;
+
+  console.log('');
+  console.log(
+    `✅ Completed: ${completed}/${SYMBOLS.length}`
+  );
   console.log('');
 
   return results;
