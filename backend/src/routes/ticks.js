@@ -1,13 +1,16 @@
 import express from 'express';
 import DerivAPI from '../services/derivAPI.js';
 import Tick from '../models/Tick.js';
+import {
+  processTickForLearning
+} from '../services/learningService.js';
 
 const router = express.Router();
 
 const activeConnections = new Map();
 
 /*
- * SYMBOLS
+ * AVAILABLE SYMBOLS
  */
 router.get('/symbols', (req, res) => {
   res.json([
@@ -39,20 +42,17 @@ router.get('/test', (req, res) => {
 });
 
 /*
- * Convert a Deriv quote into the final digit
- * using the quote precision where possible.
+ * EXTRACT THE FINAL DIGIT
  *
- * Examples:
+ * Deriv provides pip_size.
  *
- * 597.6   -> 6
- * 597.63  -> 3
- * 597.638 -> 8
+ * Example:
  *
- * We deliberately do NOT use:
+ * 4873.313 with pip_size 3
+ * => final digit = 3
  *
- * Math.floor(quote * 10) % 10
- *
- * because that assumes one decimal place.
+ * 48372.0306 with pip_size 4
+ * => final digit = 6
  */
 function extractLastDigit(tick) {
   if (!tick) {
@@ -65,61 +65,47 @@ function extractLastDigit(tick) {
     return null;
   }
 
-  /*
-   * Deriv can provide pip_size on the tick.
-   *
-   * Example:
-   * pip_size = 1
-   * pip_size = 2
-   * pip_size = 3
-   */
   const pipSize = Number(tick.pip_size);
 
   /*
-   * If pip_size is available, convert the quote
-   * into a fixed decimal representation.
+   * Use Deriv's pip_size whenever available.
    */
   if (
     Number.isInteger(pipSize) &&
     pipSize >= 0 &&
     pipSize <= 10
   ) {
-    const fixed = Math.abs(quote).toFixed(pipSize);
+    const fixedQuote =
+      Math.abs(quote).toFixed(pipSize);
 
-    /*
-     * If the quote has decimals, take the final
-     * decimal digit.
-     */
     if (pipSize > 0) {
-      const decimalPart = fixed.split('.')[1];
+      const decimalPart =
+        fixedQuote.split('.')[1];
 
       if (
         decimalPart &&
         decimalPart.length > 0
       ) {
         return Number(
-          decimalPart[decimalPart.length - 1]
+          decimalPart[
+            decimalPart.length - 1
+          ]
         );
       }
     }
 
-    /*
-     * No decimal places.
-     */
-    return Math.abs(
-      Math.trunc(quote)
-    ) % 10;
+    return (
+      Math.abs(
+        Math.trunc(quote)
+      ) % 10
+    );
   }
 
   /*
-   * Fallback when pip_size is not present.
-   *
-   * Convert the number to a normal decimal
-   * string and take its final decimal digit.
+   * Fallback if pip_size is unavailable.
    */
-  const text = String(
-    Math.abs(quote)
-  );
+  const text =
+    String(Math.abs(quote));
 
   if (text.includes('.')) {
     const decimalPart =
@@ -137,17 +123,18 @@ function extractLastDigit(tick) {
     }
   }
 
-  return Math.abs(
-    Math.trunc(quote)
-  ) % 10;
+  return (
+    Math.abs(
+      Math.trunc(quote)
+    ) % 10
+  );
 }
 
 /*
- * Save a tick to MongoDB.
+ * SAVE TICK
  *
- * IMPORTANT:
- * Database failure must NOT stop the live
- * Deriv/SSE stream.
+ * MongoDB failure must not stop the live
+ * Deriv stream.
  */
 async function saveTick(tick) {
   try {
@@ -157,13 +144,11 @@ async function saveTick(tick) {
 
     const symbol = tick.symbol;
 
-    const quote = Number(
-      tick.quote
-    );
+    const quote =
+      Number(tick.quote);
 
-    const epoch = Number(
-      tick.epoch
-    );
+    const epoch =
+      Number(tick.epoch);
 
     const digit =
       extractLastDigit(tick);
@@ -209,12 +194,8 @@ async function saveTick(tick) {
       `💾 TICK SAVED ${symbol}: quote=${quote} digit=${digit} epoch=${epoch}`
     );
   } catch (error) {
-    /*
-     * Do not kill the live stream because
-     * MongoDB had a temporary problem.
-     */
     console.error(
-      `⚠️ MONGODB TICK SAVE FAILED:`,
+      '⚠️ MONGODB TICK SAVE FAILED:',
       error?.message ||
         String(error)
     );
@@ -222,7 +203,7 @@ async function saveTick(tick) {
 }
 
 /*
- * SERVER-SENT EVENTS TICK STREAM
+ * SSE STREAM
  */
 router.get(
   '/stream/:symbol',
@@ -310,7 +291,7 @@ router.get(
     }
 
     /*
-     * Flush SSE headers immediately.
+     * Flush headers immediately.
      */
     if (
       typeof res.flushHeaders ===
@@ -320,7 +301,7 @@ router.get(
     }
 
     /*
-     * Initial connection event.
+     * Initial SSE event.
      */
     res.write(
       `event: connected\ndata: ${JSON.stringify({
@@ -357,9 +338,7 @@ router.get(
       }
 
       const connection =
-        activeConnections.get(
-          res
-        );
+        activeConnections.get(res);
 
       if (connection) {
         try {
@@ -441,10 +420,7 @@ router.get(
             );
 
             /*
-             * Calculate the digit now.
-             *
-             * This is the SAME actual digit
-             * that will be stored in MongoDB.
+             * Calculate actual final digit.
              */
             const digit =
               extractLastDigit(
@@ -460,20 +436,82 @@ router.get(
             }
 
             /*
-             * Save historical memory.
-             *
-             * We deliberately do not await this
-             * before sending SSE. Live data should
-             * remain fast even if MongoDB is slow.
+             * ======================================
+             * SAVE HISTORICAL MEMORY
+             * ======================================
              */
-            saveTick(tick);
+            await saveTick(tick);
 
             /*
-             * Send the original Deriv tick to
-             * the frontend.
+             * ======================================
+             * PROCESS LEARNING
+             * ======================================
              *
-             * Existing Dashboard code therefore
-             * continues receiving the same object.
+             * This does:
+             *
+             * previous prediction
+             *       ↓
+             * WIN / LOSS
+             *       ↓
+             * new prediction for NEXT tick
+             */
+            try {
+              if (
+                Number.isInteger(digit) &&
+                Number.isFinite(
+                  Number(tick.epoch)
+                )
+              ) {
+                const learning =
+                  await processTickForLearning({
+                    symbol,
+                    digit,
+                    epoch:
+                      Number(tick.epoch)
+                  });
+
+                if (
+                  learning?.resolved
+                ) {
+                  console.log(
+                    `🧠 LEARNING RESULT ${symbol}:`,
+                    JSON.stringify(
+                      learning.resolved
+                    )
+                  );
+                }
+
+                if (
+                  learning?.prediction
+                ) {
+                  console.log(
+                    `🧠 NEW PREDICTION ${symbol}:`,
+                    JSON.stringify(
+                      learning.prediction
+                    )
+                  );
+                }
+              }
+            } catch (error) {
+              /*
+               * Learning failure must never
+               * kill the live stream.
+               */
+              console.error(
+                `⚠️ LEARNING PROCESS ERROR ${symbol}:`,
+                error?.message ||
+                  String(error)
+              );
+            }
+
+            /*
+             * ======================================
+             * SEND TICK TO FRONTEND
+             * ======================================
+             *
+             * We continue sending the original
+             * Deriv tick object so the existing
+             * Dashboard remains compatible.
              */
             try {
               res.write(
