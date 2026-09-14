@@ -1,5 +1,5 @@
 import Prediction from '../models/Prediction.js';
-import { predictNextDigit } from './predictionEngine.js';
+import { predictNextDigit } from './PredictionEngine.js'
 
 /*
  * Process ticks sequentially for each symbol.
