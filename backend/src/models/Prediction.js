@@ -9,8 +9,19 @@ const predictionSchema = new mongoose.Schema(
     },
 
     /*
-     * The digit our system predicted BEFORE
-     * the next tick arrived.
+     * The epoch of the tick that was already known
+     * when this prediction was created.
+     *
+     * The prediction is for the NEXT tick.
+     */
+    predictionEpoch: {
+      type: Number,
+      required: true,
+      index: true
+    },
+
+    /*
+     * The predicted next digit.
      */
     predictedDigit: {
       type: Number,
@@ -20,11 +31,7 @@ const predictionSchema = new mongoose.Schema(
     },
 
     /*
-     * The actual digit from the next
-     * unseen Deriv tick.
-     *
-     * This remains null until the next tick
-     * arrives.
+     * Actual digit from the next unseen tick.
      */
     actualDigit: {
       type: Number,
@@ -34,11 +41,10 @@ const predictionSchema = new mongoose.Schema(
     },
 
     /*
-     * Prediction probability at the moment
-     * the prediction was made.
+     * Probability calculated from historical data.
      *
      * Example:
-     * 0.18 = 18%
+     * 0.17 = 17%
      */
     probability: {
       type: Number,
@@ -48,8 +54,7 @@ const predictionSchema = new mongoose.Schema(
     },
 
     /*
-     * Whether there was enough evidence
-     * to recommend an entry.
+     * Trading signal.
      */
     signal: {
       type: String,
@@ -62,7 +67,7 @@ const predictionSchema = new mongoose.Schema(
     },
 
     /*
-     * Result after the next tick arrives.
+     * Prediction outcome.
      */
     result: {
       type: String,
@@ -76,8 +81,7 @@ const predictionSchema = new mongoose.Schema(
     },
 
     /*
-     * Optional description of the evidence
-     * used by the prediction engine.
+     * Strategy used.
      */
     strategy: {
       type: String,
@@ -86,7 +90,7 @@ const predictionSchema = new mongoose.Schema(
 
     /*
      * Number of historical ticks available
-     * when this prediction was created.
+     * when the prediction was created.
      */
     historySize: {
       type: Number,
@@ -94,7 +98,27 @@ const predictionSchema = new mongoose.Schema(
     },
 
     /*
-     * Time when prediction was created.
+     * The current digit when the prediction
+     * was created.
+     */
+    currentDigit: {
+      type: Number,
+      min: 0,
+      max: 9,
+      default: null
+    },
+
+    /*
+     * Number of historical transitions involving
+     * the current digit.
+     */
+    transitionSamples: {
+      type: Number,
+      default: 0
+    },
+
+    /*
+     * Time prediction was created.
      */
     predictedAt: {
       type: Date,
@@ -103,7 +127,7 @@ const predictionSchema = new mongoose.Schema(
     },
 
     /*
-     * Time when the actual result became known.
+     * Time prediction was resolved.
      */
     resolvedAt: {
       type: Date,
@@ -116,14 +140,27 @@ const predictionSchema = new mongoose.Schema(
 );
 
 /*
- * Helps us quickly find the latest
- * unresolved prediction for a symbol.
+ * Find pending predictions efficiently.
  */
 predictionSchema.index({
   symbol: 1,
   result: 1,
   predictedAt: -1
 });
+
+/*
+ * Prevent duplicate predictions for the same
+ * symbol and prediction tick.
+ */
+predictionSchema.index(
+  {
+    symbol: 1,
+    predictionEpoch: 1
+  },
+  {
+    unique: true
+  }
+);
 
 const Prediction =
   mongoose.models.Prediction ||
