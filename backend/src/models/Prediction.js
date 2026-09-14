@@ -21,6 +21,25 @@ const predictionSchema = new mongoose.Schema(
     },
 
     /*
+     * The recent digit pattern that existed when
+     * this prediction was created.
+     *
+     * Example:
+     *
+     * [7, 3, 7]
+     *
+     * means the engine saw:
+     *
+     * 7 -> 3 -> 7
+     *
+     * and predicted the NEXT digit.
+     */
+    pattern: {
+      type: [Number],
+      default: []
+    },
+
+    /*
      * The predicted next digit.
      */
     predictedDigit: {
@@ -44,6 +63,7 @@ const predictionSchema = new mongoose.Schema(
      * Probability calculated from historical data.
      *
      * Example:
+     *
      * 0.17 = 17%
      */
     probability: {
@@ -144,6 +164,17 @@ const predictionSchema = new mongoose.Schema(
  */
 predictionSchema.index({
   symbol: 1,
+  result: 1,
+  predictedAt: -1
+});
+
+/*
+ * Find historical performance for a specific
+ * pattern and predicted digit.
+ */
+predictionSchema.index({
+  symbol: 1,
+  predictedDigit: 1,
   result: 1,
   predictedAt: -1
 });
