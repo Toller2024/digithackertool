@@ -49,32 +49,6 @@ router.get('/test', (req, res) => {
  * ==========================================
  * EXTRACT FINAL DISPLAYED DIGIT
  * ==========================================
- *
- * IMPORTANT:
- *
- * We intentionally DO NOT use:
- *
- * Number(quote).toFixed(pip_size)
- *
- * because toFixed() can add trailing zeros.
- *
- * Example:
- *
- * 48403.326
- *
- * must remain:
- *
- * 48403.326
- *
- * and therefore the final digit is:
- *
- * 6
- *
- * NOT:
- *
- * 48403.3260 -> 0
- *
- * ==========================================
  */
 function extractLastDigit(tick) {
   if (!tick) {
@@ -90,9 +64,6 @@ function extractLastDigit(tick) {
     return null;
   }
 
-  /*
-   * Convert the original quote value to text.
-   */
   const text = String(rawQuote).trim();
 
   if (!text) {
@@ -100,15 +71,10 @@ function extractLastDigit(tick) {
   }
 
   /*
-   * Handle decimal quotes.
+   * Decimal quote.
    *
    * Example:
-   *
-   * 48403.326
-   *
-   * decimalPart = "326"
-   *
-   * final digit = 6
+   * 48403.326 -> 6
    */
   if (text.includes('.')) {
     const decimalPart =
@@ -137,10 +103,9 @@ function extractLastDigit(tick) {
   }
 
   /*
-   * Fallback for whole-number quotes.
+   * Whole number fallback.
    *
    * Example:
-   *
    * 48403 -> 3
    */
   const number = Number(text);
@@ -159,10 +124,6 @@ function extractLastDigit(tick) {
 /*
  * ==========================================
  * SAVE TICK TO MONGODB
- * ==========================================
- *
- * MongoDB failure must NOT stop the live
- * Deriv stream.
  * ==========================================
  */
 async function saveTick(tick) {
@@ -184,7 +145,7 @@ async function saveTick(tick) {
       extractLastDigit(tick);
 
     /*
-     * Validate tick before saving.
+     * Validate tick.
      */
     if (
       !symbol ||
@@ -203,8 +164,9 @@ async function saveTick(tick) {
     }
 
     /*
-     * Save only once for each
-     * symbol + epoch combination.
+     * Save only once for:
+     *
+     * symbol + epoch
      */
     await Tick.updateOne(
       {
@@ -232,8 +194,8 @@ async function saveTick(tick) {
     );
   } catch (error) {
     /*
-     * Database problems must not
-     * kill the live stream.
+     * MongoDB problems must never
+     * kill the live Deriv stream.
      */
     console.error(
       '⚠️ MONGODB TICK SAVE FAILED:',
@@ -366,6 +328,36 @@ router.get(
 
     /*
      * ========================================
+     * SEND SSE EVENT HELPER
+     * ========================================
+     */
+    const sendSSE = (
+      eventName,
+      data
+    ) => {
+      if (closed) {
+        return false;
+      }
+
+      try {
+        res.write(
+          `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`
+        );
+
+        return true;
+      } catch (error) {
+        console.error(
+          `❌ SSE SEND ERROR ${symbol}:`,
+          error?.message ||
+            String(error)
+        );
+
+        return false;
+      }
+    };
+
+    /*
+     * ========================================
      * CLEANUP
      * ========================================
      */
@@ -427,7 +419,7 @@ router.get(
         }
 
         /*
-         * Remove from active connections.
+         * Remove connection.
          */
         activeConnections.delete(
           res
@@ -491,6 +483,14 @@ router.get(
               response.tick;
 
             /*
+             * Don't process after
+             * connection has closed.
+             */
+            if (closed) {
+              return;
+            }
+
+            /*
              * ==================================
              * LIVE QUOTE
              * ==================================
@@ -514,14 +514,6 @@ router.get(
             );
 
             /*
-             * Don't process anything after
-             * the connection has closed.
-             */
-            if (closed) {
-              return;
-            }
-
-            /*
              * ==================================
              * SAVE HISTORICAL MEMORY
              * ==================================
@@ -533,20 +525,6 @@ router.get(
             /*
              * ==================================
              * PROCESS LEARNING SYSTEM
-             * ==================================
-             *
-             * Flow:
-             *
-             * Previous prediction
-             *          ↓
-             * Compare with actual digit
-             *          ↓
-             *       WIN / LOSS
-             *          ↓
-             * Update learning memory
-             *          ↓
-             * Generate next prediction
-             *
              * ==================================
              */
             try {
@@ -578,6 +556,27 @@ router.get(
                       learning.resolved
                     )
                   );
+
+                  /*
+                   * Send WIN / LOSS
+                   * to Dashboard.
+                   */
+                  const resultSent =
+                    sendSSE(
+                      'result',
+                      {
+                        type: 'result',
+                        symbol,
+                        result:
+                          learning.resolved
+                      }
+                    );
+
+                  if (resultSent) {
+                    console.log(
+                      `📤 RESULT SENT TO DASHBOARD: ${symbol}`
+                    );
+                  }
                 }
 
                 /*
@@ -594,12 +593,36 @@ router.get(
                       learning.prediction
                     )
                   );
+
+                  /*
+                   * Send adaptive prediction
+                   * to Dashboard.
+                   */
+                  const predictionSent =
+                    sendSSE(
+                      'prediction',
+                      {
+                        type: 'prediction',
+                        symbol,
+                        prediction:
+                          learning.prediction,
+                        resolved:
+                          learning.resolved ||
+                          null
+                      }
+                    );
+
+                  if (predictionSent) {
+                    console.log(
+                      `📤 PREDICTION SENT TO DASHBOARD: ${symbol}`
+                    );
+                  }
                 }
               }
             } catch (error) {
               /*
                * Learning failure must NEVER
-               * kill the live Deriv stream.
+               * kill live Deriv stream.
                */
               console.error(
                 `⚠️ LEARNING PROCESS ERROR ${symbol}:`,
@@ -613,21 +636,13 @@ router.get(
              * SEND ORIGINAL TICK TO FRONTEND
              * ==================================
              *
-             * We keep the original tick object
-             * so the current Dashboard remains
-             * compatible.
+             * The existing Dashboard remains
+             * compatible with this event.
              */
-            try {
-              res.write(
-                `data: ${JSON.stringify(tick)}\n\n`
-              );
-            } catch (error) {
-              console.error(
-                '❌ SSE WRITE ERROR:',
-                error?.message ||
-                  String(error)
-              );
-            }
+            sendSSE(
+              'message',
+              tick
+            );
           }
         );
 
@@ -652,8 +667,6 @@ router.get(
        * ========================================
        * HEARTBEAT
        * ========================================
-       *
-       * Keeps SSE alive through proxies.
        */
       heartbeat =
         setInterval(() => {
@@ -711,14 +724,15 @@ router.get(
       cleanup();
 
       try {
-        res.write(
-          `event: error\ndata: ${JSON.stringify({
+        sendSSE(
+          'error',
+          {
             error:
               'Failed to start tick stream',
             message:
               error?.message ||
               String(error)
-          })}\n\n`
+          }
         );
 
         res.end();
