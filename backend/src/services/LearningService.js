@@ -1,5 +1,5 @@
 import Prediction from '../models/Prediction.js';
-import { predictNextDigit } from './PredictionEngine.js'
+import { predictNextDigit } from './PredictionEngine.js';
 
 /*
  * Process ticks sequentially for each symbol.
@@ -95,10 +95,6 @@ export function processTickForLearning({
           symbol,
           result: 'PENDING',
 
-          /*
-           * The prediction must have been created
-           * from an earlier tick.
-           */
           predictionEpoch: {
             $lt: epoch
           }
@@ -135,6 +131,9 @@ export function processTickForLearning({
           actualDigit:
             digit,
 
+          pattern:
+            pending.pattern || [],
+
           result:
             won
               ? 'WIN'
@@ -153,7 +152,7 @@ export function processTickForLearning({
         };
 
         console.log(
-          `${won ? '✅' : '❌'} PREDICTION RESULT ${symbol}: predicted=${pending.predictedDigit} actual=${digit} result=${won ? 'WIN' : 'LOSS'}`
+          `${won ? '✅' : '❌'} PREDICTION RESULT ${symbol}: predicted=${pending.predictedDigit} actual=${digit} result=${won ? 'WIN' : 'LOSS'} pattern=${JSON.stringify(pending.pattern || [])}`
         );
       }
 
@@ -178,6 +177,7 @@ export function processTickForLearning({
 
         return {
           resolved,
+
           prediction: {
             id:
               existing._id.toString(),
@@ -209,6 +209,9 @@ export function processTickForLearning({
 
             currentDigit:
               existing.currentDigit,
+
+            pattern:
+              existing.pattern || [],
 
             transitionSamples:
               existing.transitionSamples,
@@ -283,6 +286,13 @@ export function processTickForLearning({
           predictionEpoch:
             epoch,
 
+          pattern:
+            Array.isArray(
+              prediction.pattern
+            )
+              ? prediction.pattern
+              : [],
+
           predictedDigit:
             prediction.prediction,
 
@@ -318,7 +328,7 @@ export function processTickForLearning({
         });
 
       console.log(
-        `🔒 NEXT PREDICTION LOCKED ${symbol}: digit=${prediction.prediction} probability=${prediction.probabilityPercent}% signal=${prediction.signal} history=${prediction.historySize} epoch=${epoch}`
+        `🔒 NEXT PREDICTION LOCKED ${symbol}: digit=${prediction.prediction} probability=${prediction.probabilityPercent}% signal=${prediction.signal} history=${prediction.historySize} pattern=${JSON.stringify(prediction.pattern || [])} epoch=${epoch}`
       );
 
       return {
@@ -350,6 +360,9 @@ export function processTickForLearning({
 
           currentDigit:
             prediction.currentDigit,
+
+          pattern:
+            prediction.pattern || [],
 
           transitionSamples:
             prediction.transitionSamples,
