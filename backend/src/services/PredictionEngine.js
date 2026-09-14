@@ -3,100 +3,89 @@ import Prediction from '../models/Prediction.js';
 
 /*
  * ==========================================
- * DIGIT PREDICTION ENGINE
+ * ADAPTIVE DIGIT PREDICTION ENGINE
  * ==========================================
  *
- * Uses:
+ * The engine learns from:
  *
- * 1. MARKET MEMORY
- *    - Historical digit frequency
- *    - Historical digit transitions
+ * 1. Historical digit frequency
+ * 2. Current-digit transitions
+ * 3. Recent digit sequences
+ * 4. Previous WIN/LOSS performance
  *
- * 2. PREDICTION PERFORMANCE MEMORY
- *    - Previous WIN / LOSS results
- *    - Performance of predicted digits
+ * The model NEVER forces confidence to 55%, 75%,
+ * 95%, etc.
  *
- * The probabilities are empirical.
- * No artificial confidence floor is used.
+ * Probability remains an empirical estimate.
  *
  * IMPORTANT:
- * This is a statistical model.
+ * This is a statistical learning system.
  * It cannot guarantee the next digit.
  */
 
 /*
  * ==========================================
- * HISTORICAL MEMORY SIZE
+ * SETTINGS
  * ==========================================
- *
- * The database can contain more than 10,000
- * ticks per symbol.
- *
- * The prediction engine will use the latest
- * 10,000 historical ticks.
  */
-const HISTORY_LIMIT = 10000;
 
-/*
- * Maximum number of resolved predictions
- * used for performance memory.
- */
+const HISTORY_LIMIT = 1000;
+
 const PERFORMANCE_LIMIT = 500;
 
-/*
- * Ten possible digits.
- */
 const DIGIT_COUNT = 10;
 
-/*
- * Equal baseline probability.
- *
- * 1 / 10 = 10%
- */
-const BASELINE_PROBABILITY = 0.10;
-
-/*
- * Minimum history required before prediction.
- */
 const MIN_HISTORY = 30;
 
-/*
- * Minimum performance samples required
- * before performance memory influences
- * a candidate.
- */
+const MIN_PATTERN_SAMPLES = 5;
+
 const MIN_PERFORMANCE_SAMPLES = 5;
 
 /*
- * Weight assigned to transition memory.
+ * Number of previous digits used to define
+ * a recent pattern.
+ *
+ * Example:
+ *
+ * 7, 3, 7
+ *
+ * predicts the digit after that sequence.
  */
-const TRANSITION_WEIGHT = 0.60;
+const PATTERN_LENGTH = 3;
 
 /*
- * Weight assigned to global digit frequency.
+ * Learning weights.
+ *
+ * These are evidence weights, not confidence
+ * guarantees.
  */
-const GLOBAL_WEIGHT = 0.25;
+const GLOBAL_WEIGHT = 0.20;
 
-/*
- * Weight assigned to prediction performance.
- */
+const TRANSITION_WEIGHT = 0.35;
+
+const PATTERN_WEIGHT = 0.30;
+
 const PERFORMANCE_WEIGHT = 0.15;
 
 /*
  * Signal thresholds.
  *
- * These are actual probability thresholds.
+ * With ten equally likely digits the baseline
+ * is approximately 10%.
  *
- * No artificial confidence floor is applied.
+ * These thresholds are NOT confidence floors.
  */
 const ENTRY_PROBABILITY = 0.15;
+
 const WAIT_PROBABILITY = 0.12;
+
 
 /*
  * ==========================================
  * VALIDATE DIGIT
  * ==========================================
  */
+
 function validDigit(value) {
   const digit = Number(value);
 
@@ -111,69 +100,13 @@ function validDigit(value) {
   return digit;
 }
 
-/*
- * ==========================================
- * SELECT BEST DIGIT
- * ==========================================
- *
- * If probabilities tie, use supporting
- * evidence to make the selection deterministic.
- */
-function selectBestDigit(
-  probabilities,
-  supportCounts = null
-) {
-  let bestDigit = null;
-  let bestProbability = -1;
-  let bestSupport = -1;
-
-  for (
-    let digit = 0;
-    digit < DIGIT_COUNT;
-    digit++
-  ) {
-    const probability =
-      Number(
-        probabilities[digit] ?? 0
-      );
-
-    const support =
-      supportCounts
-        ? Number(
-            supportCounts[digit] ?? 0
-          )
-        : 0;
-
-    if (
-      probability > bestProbability ||
-      (
-        probability === bestProbability &&
-        support > bestSupport
-      )
-    ) {
-      bestProbability =
-        probability;
-
-      bestDigit =
-        digit;
-
-      bestSupport =
-        support;
-    }
-  }
-
-  return {
-    digit: bestDigit,
-    probability: bestProbability,
-    support: bestSupport
-  };
-}
 
 /*
  * ==========================================
  * GET HISTORICAL TICKS
  * ==========================================
  */
+
 export async function getHistoricalTicks(
   symbol,
   limit = HISTORY_LIMIT
@@ -188,24 +121,17 @@ export async function getHistoricalTicks(
       .limit(limit)
       .lean();
 
-  /*
-   * MongoDB returns newest first.
-   *
-   * Reverse into:
-   *
-   * oldest -> newest
-   */
   return ticks.reverse();
 }
 
+
 /*
  * ==========================================
- * GLOBAL DIGIT FREQUENCY
+ * GLOBAL DIGIT MEMORY
  * ==========================================
  */
-function calculateGlobalProbabilities(
-  ticks
-) {
+
+function calculateGlobalMemory(ticks) {
   const counts =
     Array(DIGIT_COUNT).fill(0);
 
@@ -224,9 +150,7 @@ function calculateGlobalProbabilities(
   }
 
   const probabilities =
-    Array(DIGIT_COUNT).fill(
-      BASELINE_PROBABILITY
-    );
+    Array(DIGIT_COUNT).fill(0);
 
   if (total === 0) {
     return {
@@ -252,34 +176,31 @@ function calculateGlobalProbabilities(
   };
 }
 
+
 /*
  * ==========================================
- * DIGIT TRANSITION MEMORY
+ * CURRENT DIGIT TRANSITION MEMORY
  * ==========================================
  *
  * Example:
  *
- * Current digit = 7
- *
- * Historical:
- *
  * 7 -> 3
  * 7 -> 5
  * 7 -> 3
- * 7 -> 3
  *
- * Then:
+ * P(next=3 | current=7)
  *
- * P(3 | 7) = 75%
+ * is 2 / 3.
  */
-function calculateTransitionProbabilities(
+
+function calculateTransitionMemory(
   ticks,
   currentDigit
 ) {
   const counts =
     Array(DIGIT_COUNT).fill(0);
 
-  let totalTransitions = 0;
+  let total = 0;
 
   for (
     let i = 0;
@@ -304,49 +225,242 @@ function calculateTransitionProbabilities(
     }
 
     if (
-      current === currentDigit
+      current !== currentDigit
     ) {
-      counts[next]++;
-      totalTransitions++;
+      continue;
     }
+
+    counts[next]++;
+    total++;
   }
 
   const probabilities =
     Array(DIGIT_COUNT).fill(0);
 
-  if (
-    totalTransitions === 0
-  ) {
-    return {
-      counts,
-      probabilities,
-      totalTransitions
-    };
-  }
-
-  for (
-    let digit = 0;
-    digit < DIGIT_COUNT;
-    digit++
-  ) {
-    probabilities[digit] =
-      counts[digit] /
-      totalTransitions;
+  if (total > 0) {
+    for (
+      let digit = 0;
+      digit < DIGIT_COUNT;
+      digit++
+    ) {
+      probabilities[digit] =
+        counts[digit] / total;
+    }
   }
 
   return {
     counts,
     probabilities,
-    totalTransitions
+    total
   };
 }
+
+
+/*
+ * ==========================================
+ * RECENT PATTERN MEMORY
+ * ==========================================
+ *
+ * Example:
+ *
+ * Pattern:
+ *
+ * 7 -> 3 -> 7
+ *
+ * Historical occurrences:
+ *
+ * 7,3,7 -> 2
+ * 7,3,7 -> 5
+ * 7,3,7 -> 2
+ *
+ * Therefore:
+ *
+ * P(next=2 | 7,3,7) = 2/3
+ *
+ * This allows the model to recognize repeated
+ * short-term contexts.
+ */
+
+function calculatePatternMemory(
+  ticks,
+  currentDigit
+) {
+  const counts =
+    Array(DIGIT_COUNT).fill(0);
+
+  let total = 0;
+
+  if (
+    ticks.length <
+    PATTERN_LENGTH + 1
+  ) {
+    return {
+      counts,
+      probabilities:
+        Array(DIGIT_COUNT).fill(0),
+      total,
+      pattern: []
+    };
+  }
+
+  /*
+   * The current prediction context is the
+   * last PATTERN_LENGTH digits.
+   */
+  const currentPattern =
+    ticks
+      .slice(
+        ticks.length -
+          PATTERN_LENGTH
+      )
+      .map(
+        tick =>
+          validDigit(
+            tick.digit
+          )
+      );
+
+  /*
+   * Make sure the current pattern is valid.
+   */
+  if (
+    currentPattern.length !==
+      PATTERN_LENGTH ||
+    currentPattern.some(
+      digit => digit === null
+    )
+  ) {
+    return {
+      counts,
+      probabilities:
+        Array(DIGIT_COUNT).fill(0),
+      total,
+      pattern:
+        currentPattern
+    };
+  }
+
+  /*
+   * Search historical occurrences of the
+   * exact same pattern.
+   */
+  for (
+    let i = 0;
+    i <=
+      ticks.length -
+        PATTERN_LENGTH -
+        1;
+    i++
+  ) {
+    let matches = true;
+
+    for (
+      let j = 0;
+      j < PATTERN_LENGTH;
+      j++
+    ) {
+      const digit =
+        validDigit(
+          ticks[
+            i + j
+          ]?.digit
+        );
+
+      if (
+        digit !==
+        currentPattern[j]
+      ) {
+        matches = false;
+        break;
+      }
+    }
+
+    if (!matches) {
+      continue;
+    }
+
+    /*
+     * The digit immediately after the
+     * matching pattern.
+     */
+    const next =
+      validDigit(
+        ticks[
+          i + PATTERN_LENGTH
+        ]?.digit
+      );
+
+    if (next === null) {
+      continue;
+    }
+
+    /*
+     * Don't use the current live occurrence
+     * as historical evidence.
+     *
+     * The final pattern occurrence belongs to
+     * the current prediction context.
+     */
+    if (
+      i + PATTERN_LENGTH >=
+      ticks.length - 1
+    ) {
+      continue;
+    }
+
+    counts[next]++;
+    total++;
+  }
+
+  const probabilities =
+    Array(DIGIT_COUNT).fill(0);
+
+  if (total > 0) {
+    for (
+      let digit = 0;
+      digit < DIGIT_COUNT;
+      digit++
+    ) {
+      probabilities[digit] =
+        counts[digit] / total;
+    }
+  }
+
+  return {
+    counts,
+    probabilities,
+    total,
+    pattern:
+      currentPattern
+  };
+}
+
 
 /*
  * ==========================================
  * PREDICTION PERFORMANCE MEMORY
  * ==========================================
+ *
+ * Learn from the tool's own previous
+ * predictions.
+ *
+ * Example:
+ *
+ * Current digit = 7
+ * Predicted digit = 3
+ *
+ * Previous results:
+ *
+ * 7 -> predicted 3 -> WIN
+ * 7 -> predicted 3 -> WIN
+ * 7 -> predicted 3 -> LOSS
+ *
+ * Performance estimate:
+ *
+ * 2 / 3 = 66.67%
  */
-async function calculatePerformanceProbabilities(
+
+async function calculatePerformanceMemory(
   symbol,
   currentDigit
 ) {
@@ -359,16 +473,19 @@ async function calculatePerformanceProbabilities(
   const losses =
     Array(DIGIT_COUNT).fill(0);
 
-  /*
-   * Get resolved predictions only.
-   */
   const predictions =
     await Prediction.find({
       symbol,
+
       result: {
-        $in: ['WIN', 'LOSS']
+        $in: [
+          'WIN',
+          'LOSS'
+        ]
       },
+
       currentDigit,
+
       predictedDigit: {
         $gte: 0,
         $lte: 9
@@ -399,25 +516,22 @@ async function calculatePerformanceProbabilities(
     counts[predictedDigit]++;
 
     if (
-      prediction.result === 'WIN'
+      prediction.result ===
+      'WIN'
     ) {
       wins[predictedDigit]++;
     }
 
     if (
-      prediction.result === 'LOSS'
+      prediction.result ===
+      'LOSS'
     ) {
       losses[predictedDigit]++;
     }
   }
 
-  /*
-   * Neutral baseline.
-   */
   const probabilities =
-    Array(DIGIT_COUNT).fill(
-      BASELINE_PROBABILITY
-    );
+    Array(DIGIT_COUNT).fill(0);
 
   for (
     let digit = 0;
@@ -444,87 +558,145 @@ async function calculatePerformanceProbabilities(
   };
 }
 
+
 /*
  * ==========================================
- * COMBINE MARKET + PERFORMANCE MEMORY
+ * COMBINE LEARNING SOURCES
  * ==========================================
  */
-function combineProbabilities({
-  globalProbabilities,
-  transitionProbabilities,
-  transitionCount,
-  performanceProbabilities,
-  performanceCounts
+
+function combineMemories({
+  global,
+  transition,
+  pattern,
+  performance
 }) {
   const probabilities =
     Array(DIGIT_COUNT).fill(0);
+
+  /*
+   * Effective weights.
+   *
+   * If a pattern does not have enough
+   * evidence, redistribute its weight.
+   *
+   * If performance memory does not have
+   * enough evidence, redistribute its weight.
+   */
+  let globalWeight =
+    GLOBAL_WEIGHT;
+
+  let transitionWeight =
+    TRANSITION_WEIGHT;
+
+  let patternWeight =
+    pattern.total >=
+    MIN_PATTERN_SAMPLES
+      ? PATTERN_WEIGHT
+      : 0;
+
+  let performanceWeight =
+    performance.counts.some(
+      count =>
+        count >=
+        MIN_PERFORMANCE_SAMPLES
+    )
+      ? PERFORMANCE_WEIGHT
+      : 0;
+
+  let totalWeight =
+    globalWeight +
+    transitionWeight +
+    patternWeight +
+    performanceWeight;
+
+  /*
+   * If there is no transition evidence,
+   * remove its weight.
+   */
+  if (
+    transition.total === 0
+  ) {
+    transitionWeight = 0;
+  }
+
+  /*
+   * Recalculate available weight.
+   */
+  totalWeight =
+    globalWeight +
+    transitionWeight +
+    patternWeight +
+    performanceWeight;
+
+  if (
+    totalWeight <= 0
+  ) {
+    return probabilities;
+  }
 
   for (
     let digit = 0;
     digit < DIGIT_COUNT;
     digit++
   ) {
-    let marketProbability;
+    const globalProbability =
+      global.probabilities[
+        digit
+      ] ?? 0;
 
-    /*
-     * If transition evidence exists,
-     * combine transition + global frequency.
-     */
-    if (
-      transitionCount > 0
-    ) {
-      marketProbability =
-        (
-          transitionProbabilities[digit] *
-          TRANSITION_WEIGHT
-        ) +
-        (
-          globalProbabilities[digit] *
-          GLOBAL_WEIGHT
-        );
-    } else {
-      /*
-       * No transition evidence.
-       *
-       * Use global history.
-       */
-      marketProbability =
-        globalProbabilities[digit];
-    }
+    const transitionProbability =
+      transition.probabilities[
+        digit
+      ] ?? 0;
 
-    /*
-     * Performance memory is only used when
-     * enough evidence exists.
-     */
-    const performanceSampleCount =
-      Number(
-        performanceCounts[digit] ?? 0
-      );
+    const patternProbability =
+      pattern.probabilities[
+        digit
+      ] ?? 0;
+
+    const performanceProbability =
+      performance.probabilities[
+        digit
+      ] ?? 0;
+
+    let score = 0;
+
+    score +=
+      globalProbability *
+      globalWeight;
 
     if (
-      performanceSampleCount >=
-      MIN_PERFORMANCE_SAMPLES
+      transitionWeight > 0
     ) {
-      probabilities[digit] =
-        (
-          marketProbability *
-          (
-            TRANSITION_WEIGHT +
-            GLOBAL_WEIGHT
-          )
-        ) +
-        (
-          performanceProbabilities[digit] *
-          PERFORMANCE_WEIGHT
-        );
-    } else {
-      probabilities[digit] =
-        marketProbability;
+      score +=
+        transitionProbability *
+        transitionWeight;
     }
+
+    if (
+      patternWeight > 0
+    ) {
+      score +=
+        patternProbability *
+        patternWeight;
+    }
+
+    if (
+      performanceWeight > 0
+    ) {
+      score +=
+        performanceProbability *
+        performanceWeight;
+    }
+
+    probabilities[digit] =
+      score /
+      totalWeight;
   }
 
   /*
-   * Normalize final distribution.
+   * Normalize.
    */
   const total =
     probabilities.reduce(
@@ -534,16 +706,14 @@ function combineProbabilities({
     );
 
   if (
-    total > 0 &&
-    Number.isFinite(total)
+    total > 0
   ) {
     for (
       let digit = 0;
       digit < DIGIT_COUNT;
       digit++
     ) {
-      probabilities[digit] =
-        probabilities[digit] /
+      probabilities[digit] /=
         total;
     }
   }
@@ -551,11 +721,80 @@ function combineProbabilities({
   return probabilities;
 }
 
+
+/*
+ * ==========================================
+ * SELECT BEST DIGIT
+ * ==========================================
+ */
+
+function selectBestDigit(
+  probabilities,
+  supportCounts
+) {
+  let bestDigit = 0;
+
+  let bestProbability =
+    -1;
+
+  let bestSupport =
+    -1;
+
+  for (
+    let digit = 0;
+    digit < DIGIT_COUNT;
+    digit++
+  ) {
+    const probability =
+      Number(
+        probabilities[digit] ?? 0
+      );
+
+    const support =
+      Number(
+        supportCounts[digit] ?? 0
+      );
+
+    if (
+      probability >
+        bestProbability ||
+      (
+        probability ===
+          bestProbability &&
+        support >
+          bestSupport
+      )
+    ) {
+      bestDigit =
+        digit;
+
+      bestProbability =
+        probability;
+
+      bestSupport =
+        support;
+    }
+  }
+
+  return {
+    digit:
+      bestDigit,
+
+    probability:
+      bestProbability,
+
+    support:
+      bestSupport
+  };
+}
+
+
 /*
  * ==========================================
  * SIGNAL
  * ==========================================
  */
+
 function getSignal(
   probability
 ) {
@@ -576,11 +815,13 @@ function getSignal(
   return 'NO_ENTRY';
 }
 
+
 /*
  * ==========================================
- * MAIN PREDICTION FUNCTION
+ * MAIN PREDICTION
  * ==========================================
  */
+
 export async function predictNextDigit(
   symbol
 ) {
@@ -591,12 +832,7 @@ export async function predictNextDigit(
   }
 
   /*
-   * ========================================
-   * LOAD HISTORICAL MEMORY
-   * ========================================
-   *
-   * Up to 10,000 ticks are now available
-   * to the prediction model.
+   * Load up to 1,000 historical ticks.
    */
   const ticks =
     await getHistoricalTicks(
@@ -605,9 +841,7 @@ export async function predictNextDigit(
     );
 
   /*
-   * ========================================
-   * MINIMUM HISTORY CHECK
-   * ========================================
+   * Minimum history.
    */
   if (
     ticks.length <
@@ -625,16 +859,25 @@ export async function predictNextDigit(
       signal: 'NO_ENTRY',
 
       strategy:
-        'digit-transition-performance',
+        'adaptive-context-learning',
 
       historySize:
         ticks.length,
 
-      currentDigit: null,
+      currentDigit:
+        null,
 
-      transitionSamples: 0,
+      pattern:
+        [],
 
-      performanceSamples: 0,
+      transitionSamples:
+        0,
+
+      patternSamples:
+        0,
+
+      performanceSamples:
+        0,
 
       ready: false,
 
@@ -644,13 +887,11 @@ export async function predictNextDigit(
   }
 
   /*
-   * ========================================
-   * CURRENT DIGIT
-   * ========================================
+   * Current known digit.
    *
-   * This digit has already happened.
+   * This is NOT predicted.
    *
-   * We predict the NEXT digit.
+   * We predict the digit AFTER it.
    */
   const lastTick =
     ticks[
@@ -677,16 +918,25 @@ export async function predictNextDigit(
       signal: 'NO_ENTRY',
 
       strategy:
-        'digit-transition-performance',
+        'adaptive-context-learning',
 
       historySize:
         ticks.length,
 
-      currentDigit: null,
+      currentDigit:
+        null,
 
-      transitionSamples: 0,
+      pattern:
+        [],
 
-      performanceSamples: 0,
+      transitionSamples:
+        0,
+
+      patternSamples:
+        0,
+
+      performanceSamples:
+        0,
 
       ready: false,
 
@@ -697,32 +947,47 @@ export async function predictNextDigit(
 
   /*
    * ========================================
-   * GLOBAL MARKET MEMORY
+   * LEARN FROM GLOBAL HISTORY
    * ========================================
    */
+
   const global =
-    calculateGlobalProbabilities(
+    calculateGlobalMemory(
       ticks
     );
 
   /*
    * ========================================
-   * TRANSITION MEMORY
+   * LEARN CURRENT DIGIT TRANSITIONS
    * ========================================
    */
+
   const transition =
-    calculateTransitionProbabilities(
+    calculateTransitionMemory(
       ticks,
       currentDigit
     );
 
   /*
    * ========================================
-   * PERFORMANCE MEMORY
+   * LEARN RECENT PATTERN
    * ========================================
    */
+
+  const pattern =
+    calculatePatternMemory(
+      ticks,
+      currentDigit
+    );
+
+  /*
+   * ========================================
+   * LEARN FROM OWN RESULTS
+   * ========================================
+   */
+
   const performance =
-    await calculatePerformanceProbabilities(
+    await calculatePerformanceMemory(
       symbol,
       currentDigit
     );
@@ -732,28 +997,18 @@ export async function predictNextDigit(
    * COMBINE ALL MEMORY
    * ========================================
    */
+
   const probabilities =
-    combineProbabilities({
-      globalProbabilities:
-        global.probabilities,
-
-      transitionProbabilities:
-        transition.probabilities,
-
-      transitionCount:
-        transition.totalTransitions,
-
-      performanceProbabilities:
-        performance.probabilities,
-
-      performanceCounts:
-        performance.counts
+    combineMemories({
+      global,
+      transition,
+      pattern,
+      performance
     });
 
   /*
-   * ========================================
-   * SUPPORT COUNTS
-   * ========================================
+   * Support is used only to break exact
+   * probability ties.
    */
   const supportCounts =
     Array(DIGIT_COUNT).fill(0);
@@ -764,15 +1019,18 @@ export async function predictNextDigit(
     digit++
   ) {
     supportCounts[digit] =
+      global.counts[digit] +
       transition.counts[digit] +
+      pattern.counts[digit] +
       performance.counts[digit];
   }
 
   /*
    * ========================================
-   * SELECT BEST CANDIDATE
+   * SELECT NEXT DIGIT
    * ========================================
    */
+
   const best =
     selectBestDigit(
       probabilities,
@@ -784,6 +1042,7 @@ export async function predictNextDigit(
    * SIGNAL
    * ========================================
    */
+
   const signal =
     getSignal(
       best.probability
@@ -791,27 +1050,19 @@ export async function predictNextDigit(
 
   /*
    * ========================================
-   * RETURN PREDICTION
+   * RETURN
    * ========================================
    */
+
   return {
     symbol,
 
-    /*
-     * Predicted NEXT digit.
-     */
     prediction:
       best.digit,
 
-    /*
-     * Raw probability.
-     */
     probability:
       best.probability,
 
-    /*
-     * Display percentage.
-     */
     probabilityPercent:
       Number(
         (
@@ -823,28 +1074,28 @@ export async function predictNextDigit(
     signal,
 
     strategy:
-      'digit-transition-performance',
+      'adaptive-context-learning',
 
-    /*
-     * This will now grow until the model
-     * reaches the 10,000-tick history window.
-     */
     historySize:
       ticks.length,
 
     currentDigit,
 
+    pattern:
+      pattern.pattern,
+
     transitionSamples:
-      transition.totalTransitions,
+      transition.total,
+
+    patternSamples:
+      pattern.total,
 
     performanceSamples:
       performance.totalPredictions,
 
-    ready: true,
+    ready:
+      true,
 
-    /*
-     * Full probability distribution.
-     */
     probabilities:
       probabilities.map(
         (
@@ -861,8 +1112,18 @@ export async function predictNextDigit(
               ).toFixed(2)
             ),
 
+          globalSamples:
+            global.counts[
+              digit
+            ],
+
           transitionSamples:
             transition.counts[
+              digit
+            ],
+
+          patternSamples:
+            pattern.counts[
               digit
             ],
 
