@@ -1,6 +1,7 @@
 import express from 'express';
 
 import Tick from '../models/Tick.js';
+import { getPipSize, extractLastDigitFromQuote } from '../services/digitUtils.js';
 
 import {
   collectHistoricalTicks,
@@ -121,6 +122,116 @@ router.get('/status', async (req, res) => {
       error:
         error?.message ||
         'Unable to read historical status'
+    });
+  }
+});
+
+/*
+ * POST /historical/repair-digits
+ *
+ * One-time repair for existing Tick documents.
+ *
+ * Required confirmation:
+ * /historical/repair-digits?confirm=REPAIR_DIGITS
+ *
+ * This updates only the derived digit field.
+ * Quotes, epochs and timestamps are not changed.
+ */
+router.post('/repair-digits', async (req, res) => {
+  if (req.query.confirm !== 'REPAIR_DIGITS') {
+    return res.status(400).json({
+      success: false,
+      error: 'Confirmation required',
+      required: 'confirm=REPAIR_DIGITS'
+    });
+  }
+
+  try {
+    const results = [];
+    let totalUpdated = 0;
+
+    for (const symbol of SYMBOLS) {
+      const pipSize = await getPipSize(symbol);
+      const cursor = Tick.find({ symbol })
+        .select({ _id: 1, quote: 1 })
+        .lean()
+        .cursor();
+
+      let operations = [];
+      let updated = 0;
+
+      for await (const tick of cursor) {
+        const digit = extractLastDigitFromQuote(
+          tick.quote,
+          pipSize
+        );
+
+        if (
+          !Number.isInteger(digit) ||
+          digit < 0 ||
+          digit > 9
+        ) {
+          continue;
+        }
+
+        operations.push({
+          updateOne: {
+            filter: { _id: tick._id },
+            update: { $set: { digit } }
+          }
+        });
+
+        if (operations.length >= 500) {
+          const result = await Tick.bulkWrite(
+            operations,
+            { ordered: false }
+          );
+
+          updated += result.modifiedCount || 0;
+          operations = [];
+        }
+      }
+
+      if (operations.length) {
+        const result = await Tick.bulkWrite(
+          operations,
+          { ordered: false }
+        );
+
+        updated += result.modifiedCount || 0;
+      }
+
+      totalUpdated += updated;
+
+      results.push({
+        symbol,
+        pipSize,
+        updated
+      });
+
+      console.log(
+        `🛠️ DIGIT REPAIR ${symbol}: pip_size=${pipSize}, updated=${updated}`
+      );
+    }
+
+    return res.json({
+      success: true,
+      message:
+        'Existing Tick digit fields repaired. Quotes and epochs were not changed.',
+      totalUpdated,
+      results
+    });
+  } catch (error) {
+    console.error(
+      '❌ DIGIT REPAIR ERROR:',
+      error?.message || String(error)
+    );
+
+    return res.status(500).json({
+      success: false,
+      error:
+        error?.message ||
+        'Digit repair failed'
     });
   }
 });
