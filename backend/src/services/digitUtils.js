@@ -43,7 +43,6 @@ function requestPipSizeFromHistory(symbol) {
           count: 1,
           end: 'latest',
           style: 'ticks',
-          subscribe: 0,
           req_id: 1
         })
       );
