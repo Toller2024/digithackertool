@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import Tick from '../models/Tick.js';
+import { getPipSize, extractLastDigitFromQuote } from './digitUtils.js';
 
 const DERIV_WS_URL =
   'wss://api.derivws.com/trading/v1/options/ws/public';
@@ -14,24 +15,7 @@ const SYMBOLS = [
   'R_100'
 ];
 
-/*
- * Extract the final displayed digit from a quote.
- */
-function extractLastDigit(quote) {
-  const text = String(quote);
-
-  if (text.includes('.')) {
-    const decimalPart = text.split('.')[1];
-
-    if (decimalPart && decimalPart.length > 0) {
-      return Number(
-        decimalPart[decimalPart.length - 1]
-      );
-    }
-  }
-
-  return Math.abs(Number(quote)) % 10;
-}
+/* Precision-aware digit extraction is provided by digitUtils.js. */
 
 /*
  * Request historical ticks from Deriv.
@@ -143,21 +127,23 @@ function requestHistory(symbol, count) {
       const prices =
         response.history?.prices || [];
 
+      const pipSize = Number(response.pip_size);
+
       const times =
         response.history?.times || [];
 
       const ticks = [];
 
       for (
-        let i = 0;
-        i < prices.length;
-        i++
-      ) {
+      let i = 0;
+      i < history.prices.length;
+      i++
+    ) {
         const quote =
-          Number(prices[i]);
+          Number(history.prices[i]);
 
         const epoch =
-          Number(times[i]);
+          Number(history.times[i]);
 
         if (
           !Number.isFinite(quote) ||
@@ -167,7 +153,7 @@ function requestHistory(symbol, count) {
         }
 
         const digit =
-          extractLastDigit(quote);
+          extractLastDigitFromQuote(quote, pipSize);
 
         if (
           !Number.isInteger(digit) ||
@@ -188,12 +174,19 @@ function requestHistory(symbol, count) {
       }
 
       console.log(
-        `📥 Received ${ticks.length} historical ticks for ${symbol}`
-      );
+    `📥 Received ${ticks.length} historical ticks for ${symbol} using pip_size=${pipSize}`
+  );
 
       finish(
         resolve,
-        ticks
+        {
+          prices,
+          times,
+          pipSize:
+            Number.isInteger(pipSize) && pipSize >= 0
+              ? pipSize
+              : null
+        }
       );
     });
 
@@ -348,11 +341,15 @@ export async function collectHistoricalTicks(
       10000
     );
 
-  const ticks =
+  const history =
     await requestHistory(
       symbol,
       requestCount
     );
+
+  const pipSize =
+    history.pipSize ??
+    await getPipSize(symbol);
 
   const added =
     await saveTicks(ticks);
@@ -498,5 +495,5 @@ export async function collectAllHistoricalTicks(
 export {
   SYMBOLS,
   TARGET_TICKS_PER_SYMBOL,
-  extractLastDigit
+  extractLastDigitFromQuote
 };
