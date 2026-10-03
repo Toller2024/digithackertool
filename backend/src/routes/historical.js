@@ -252,9 +252,18 @@ router.post('/repair-digits', repairDigits);
  *
  * It does not change Tick documents.
  */
-router.post(
-  '/time-pattern/rebuild',
-  async (req, res) => {
+const rebuildTimePatterns = async (req, res) => {
+    if (
+      req.query.confirm !== 'BUILD_TIME_PATTERNS' &&
+      req.body?.confirm !== 'BUILD_TIME_PATTERNS'
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: 'Confirmation required',
+        required: 'confirm=BUILD_TIME_PATTERNS'
+      });
+    }
+  {
     try {
       const requested =
         Array.isArray(req.body?.symbols)
@@ -292,7 +301,16 @@ router.post(
           'Time-pattern rebuild failed'
       });
     }
-  }
+};
+
+router.get(
+  '/time-pattern/rebuild',
+  rebuildTimePatterns
+);
+
+router.post(
+  '/time-pattern/rebuild',
+  rebuildTimePatterns
 );
 
 /*
