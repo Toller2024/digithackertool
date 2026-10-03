@@ -137,7 +137,7 @@ router.get('/status', async (req, res) => {
  * This updates only the derived digit field.
  * Quotes, epochs and timestamps are not changed.
  */
-router.post('/repair-digits', async (req, res) => {
+const repairDigits = async (req, res) => {
   if (req.query.confirm !== 'REPAIR_DIGITS') {
     return res.status(400).json({
       success: false,
@@ -234,7 +234,10 @@ router.post('/repair-digits', async (req, res) => {
         'Digit repair failed'
     });
   }
-});
+};
+
+router.get('/repair-digits', repairDigits);
+router.post('/repair-digits', repairDigits);
 
 /*
  * POST /historical/collect/:symbol
