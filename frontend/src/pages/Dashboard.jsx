@@ -37,6 +37,7 @@ export default function Dashboard() {
         ticks: [],
         prediction: null,
         result: null,
+        timePatternAlert: null,
         loading: true,
         connected: false,
         error: null
@@ -370,6 +371,72 @@ export default function Dashboard() {
 
     /*
      * ========================================
+     * RECURRING TIME-PATTERN ALERT
+     * ========================================
+     */
+    source.addEventListener(
+      'timePatternAlert',
+      (event) => {
+        try {
+          console.log(
+            `⏰ TIME-PATTERN ALERT RECEIVED ${symbol}:`,
+            event.data
+          );
+
+          const alertData =
+            JSON.parse(event.data);
+
+          if (!alertData) {
+            return;
+          }
+
+          if (!mounted.current) {
+            return;
+          }
+
+          setMarketData((previous) => ({
+            ...previous,
+
+            [symbol]: {
+              ...previous[symbol],
+              timePatternAlert: alertData,
+              connected: true,
+              error: null
+            }
+          }));
+
+          /*
+           * Use the browser notification only when
+           * permission has already been granted.
+           * The dashboard alert itself does not depend
+           * on browser notification permission.
+           */
+          if (
+            typeof window !== 'undefined' &&
+            'Notification' in window &&
+            Notification.permission === 'granted'
+          ) {
+            new Notification(
+              `DigiHackerTool — ${symbol}`,
+              {
+                body:
+                  `Established time pattern: digit ${alertData.digit} around ${alertData.timeLabel} UTC — ${alertData.winRate}% historical WIN rate from ${alertData.predictionSamples} samples.`,
+                tag:
+                  `time-pattern-${symbol}`
+              }
+            );
+          }
+        } catch (error) {
+          console.error(
+            `❌ Time-pattern alert error ${symbol}:`,
+            error
+          );
+        }
+      }
+    );
+
+    /*
+     * ========================================
      * SSE ERROR
      * ========================================
      */
@@ -474,8 +541,28 @@ export default function Dashboard() {
     const result =
       data.result;
 
+    const timePatternAlert =
+      data.timePatternAlert;
+
     return (
       <div style={styles.predictionBox}>
+
+        {timePatternAlert && (
+          <div style={styles.timePatternAlert}>
+            <div style={styles.timePatternAlertTitle}>
+              ⏰ ESTABLISHED TIME-PATTERN
+            </div>
+            <div style={styles.timePatternAlertDigit}>
+              DIGIT {timePatternAlert.digit}
+            </div>
+            <div style={styles.timePatternAlertDetails}>
+              Around {timePatternAlert.timeLabel} UTC · {timePatternAlert.winRate}% WIN rate · {timePatternAlert.predictionSamples} samples
+            </div>
+            <div style={styles.timePatternAlertEvidence}>
+              {timePatternAlert.wins} wins / {timePatternAlert.losses} losses · streak {timePatternAlert.currentWinStreak}
+            </div>
+          </div>
+        )}
 
         <div style={styles.predictionHeader}>
           <div style={styles.predictionTitle}>
@@ -637,6 +724,7 @@ export default function Dashboard() {
                 ticks: [],
                 prediction: null,
                 result: null,
+                timePatternAlert: null,
                 loading: true,
                 connected: false,
                 error: null
@@ -1151,6 +1239,41 @@ const styles = {
     fontSize: '11px',
 
     textAlign: 'right'
+  },
+
+  timePatternAlert: {
+    marginBottom: '16px',
+    padding: '14px',
+    borderRadius: '12px',
+    background: 'rgba(255, 193, 7, 0.12)',
+    border: '1px solid rgba(255, 193, 7, 0.45)',
+    textAlign: 'center'
+  },
+
+  timePatternAlertTitle: {
+    color: '#ffd166',
+    fontSize: '11px',
+    fontWeight: '900',
+    letterSpacing: '1px'
+  },
+
+  timePatternAlertDigit: {
+    color: '#ffffff',
+    fontSize: '30px',
+    fontWeight: '900',
+    marginTop: '5px'
+  },
+
+  timePatternAlertDetails: {
+    color: '#ffd166',
+    fontSize: '12px',
+    marginTop: '4px'
+  },
+
+  timePatternAlertEvidence: {
+    color: '#aeb6c4',
+    fontSize: '11px',
+    marginTop: '5px'
   },
 
   resultBox: {
