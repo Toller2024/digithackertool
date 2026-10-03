@@ -1,5 +1,7 @@
 import express from 'express';
 
+import Tick from '../models/Tick.js';
+
 import {
   collectHistoricalTicks,
   collectAllHistoricalTicks,
@@ -12,18 +14,115 @@ const router = express.Router();
 /*
  * GET /historical/status
  *
- * Shows the configured historical-memory target.
+ * Shows the ACTUAL MongoDB historical-memory
+ * count for every supported volatility.
+ *
+ * This is read-only. It does not collect or
+ * modify any ticks.
  */
-router.get('/status', (req, res) => {
-  res.json({
-    success: true,
-    symbols: SYMBOLS,
-    targetPerSymbol:
-      TARGET_TICKS_PER_SYMBOL,
-    totalTarget:
-      TARGET_TICKS_PER_SYMBOL *
-      SYMBOLS.length
-  });
+router.get('/status', async (req, res) => {
+  try {
+    const symbolStats = await Promise.all(
+      SYMBOLS.map(async (symbol) => {
+        const [count, digitCounts, oldest, newest] =
+          await Promise.all([
+            Tick.countDocuments({ symbol }),
+
+            Tick.aggregate([
+              { $match: { symbol } },
+              {
+                $group: {
+                  _id: '$digit',
+                  count: { $sum: 1 }
+                }
+              },
+              { $sort: { _id: 1 } }
+            ]),
+
+            Tick.findOne({ symbol })
+              .sort({ epoch: 1 })
+              .select({ epoch: 1, timestamp: 1 })
+              .lean(),
+
+            Tick.findOne({ symbol })
+              .sort({ epoch: -1 })
+              .select({ epoch: 1, timestamp: 1 })
+              .lean()
+          ]);
+
+        const digits = Array.from(
+          { length: 10 },
+          (_, digit) => {
+            const found = digitCounts.find(
+              (item) => item._id === digit
+            );
+
+            return {
+              digit,
+              count: found?.count || 0,
+              percentage:
+                count > 0
+                  ? Number(
+                      (((found?.count || 0) / count) * 100)
+                        .toFixed(2)
+                    )
+                  : 0
+            };
+          }
+        );
+
+        return {
+          symbol,
+          count,
+          target: TARGET_TICKS_PER_SYMBOL,
+          remaining: Math.max(
+            TARGET_TICKS_PER_SYMBOL - count,
+            0
+          ),
+          complete:
+            count >= TARGET_TICKS_PER_SYMBOL,
+          oldestEpoch: oldest?.epoch ?? null,
+          newestEpoch: newest?.epoch ?? null,
+          digitDistribution: digits
+        };
+      })
+    );
+
+    const totalCount = symbolStats.reduce(
+      (sum, item) => sum + item.count,
+      0
+    );
+
+    const totalTarget =
+      TARGET_TICKS_PER_SYMBOL * SYMBOLS.length;
+
+    return res.json({
+      success: true,
+      targetPerSymbol: TARGET_TICKS_PER_SYMBOL,
+      totalTarget,
+      totalCount,
+      totalRemaining: Math.max(
+        totalTarget - totalCount,
+        0
+      ),
+      allSymbolsComplete: symbolStats.every(
+        (item) => item.complete
+      ),
+      symbols: symbolStats
+    });
+  } catch (error) {
+    console.error(
+      '❌ HISTORICAL STATUS ERROR:',
+      error?.message || String(error)
+    );
+
+    return res.status(500).json({
+      success: false,
+      error:
+        error?.message ||
+        'Unable to read historical status'
+    });
+  }
 });
 
 /*
