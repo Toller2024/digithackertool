@@ -253,54 +253,54 @@ router.post('/repair-digits', repairDigits);
  * It does not change Tick documents.
  */
 const rebuildTimePatterns = async (req, res) => {
-    if (
-      req.query.confirm !== 'BUILD_TIME_PATTERNS' &&
-      req.body?.confirm !== 'BUILD_TIME_PATTERNS'
-    ) {
-      return res.status(400).json({
-        success: false,
-        error: 'Confirmation required',
-        required: 'confirm=BUILD_TIME_PATTERNS'
-      });
-    }
-  {
-    try {
-      const requested =
-        Array.isArray(req.body?.symbols)
-          ? req.body.symbols.map((item) =>
-              String(item).toUpperCase()
-            )
-          : SYMBOLS;
+  if (
+    req.query.confirm !== 'BUILD_TIME_PATTERNS' &&
+    req.body?.confirm !== 'BUILD_TIME_PATTERNS'
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: 'Confirmation required',
+      required: 'confirm=BUILD_TIME_PATTERNS'
+    });
+  }
 
-      const symbols =
-        requested.filter((symbol) =>
-          SYMBOLS.includes(symbol)
-        );
+  try {
+    const requested =
+      Array.isArray(req.body?.symbols)
+        ? req.body.symbols.map((item) =>
+            String(item).toUpperCase()
+          )
+        : SYMBOLS;
 
-      const results =
-        await rebuildTimePatternMemory({
-          symbols
-        });
-
-      return res.json({
-        success: true,
-        message:
-          'Recurring time-pattern memory rebuilt from existing ticks.',
-        results
-      });
-    } catch (error) {
-      console.error(
-        '❌ TIME-PATTERN REBUILD ERROR:',
-        error?.message || String(error)
+    const symbols =
+      requested.filter((symbol) =>
+        SYMBOLS.includes(symbol)
       );
 
-      return res.status(500).json({
-        success: false,
-        error:
-          error?.message ||
-          'Time-pattern rebuild failed'
+    const results =
+      await rebuildTimePatternMemory({
+        symbols
       });
-    }
+
+    return res.json({
+      success: true,
+      message:
+        'Recurring time-pattern memory rebuilt from existing ticks.',
+      results
+    });
+  } catch (error) {
+    console.error(
+      '❌ TIME-PATTERN REBUILD ERROR:',
+      error?.message || String(error)
+    );
+
+    return res.status(500).json({
+      success: false,
+      error:
+        error?.message ||
+        'Time-pattern rebuild failed'
+    });
+  }
 };
 
 router.get(
