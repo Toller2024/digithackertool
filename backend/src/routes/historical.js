@@ -18,6 +18,21 @@ import {
 const router = express.Router();
 
 /*
+ * Background time-pattern rebuild state.
+ * The rebuild is intentionally not tied to an HTTP request,
+ * so Render does not have to keep a browser connection open.
+ */
+const timePatternRebuildState = {
+  running: false,
+  startedAt: null,
+  finishedAt: null,
+  error: null,
+  results: [],
+  symbols: [],
+  currentSymbol: null
+};
+
+/*
  * GET /historical/status
  *
  * Shows the ACTUAL MongoDB historical-memory
@@ -264,45 +279,110 @@ const rebuildTimePatterns = async (req, res) => {
     });
   }
 
-  try {
-    const requested =
-      Array.isArray(req.body?.symbols)
-        ? req.body.symbols.map((item) =>
-            String(item).toUpperCase()
-          )
-        : SYMBOLS;
-
-    const symbols =
-      requested.filter((symbol) =>
-        SYMBOLS.includes(symbol)
-      );
-
-    const results =
-      await rebuildTimePatternMemory({
-        symbols
-      });
-
-    return res.json({
-      success: true,
-      message:
-        'Recurring time-pattern memory rebuilt from existing ticks.',
-      results
-    });
-  } catch (error) {
-    console.error(
-      '❌ TIME-PATTERN REBUILD ERROR:',
-      error?.message || String(error)
-    );
-
-    return res.status(500).json({
+  if (timePatternRebuildState.running) {
+    return res.status(409).json({
       success: false,
-      error:
-        error?.message ||
-        'Time-pattern rebuild failed'
+      message: 'Time-pattern rebuild is already running.',
+      status: 'RUNNING',
+      ...timePatternRebuildState
     });
   }
+
+  const requested =
+    Array.isArray(req.body?.symbols)
+      ? req.body.symbols.map((item) =>
+          String(item).toUpperCase()
+        )
+      : SYMBOLS;
+
+  const symbols =
+    requested.filter((symbol) =>
+      SYMBOLS.includes(symbol)
+    );
+
+  if (!symbols.length) {
+    return res.status(400).json({
+      success: false,
+      error: 'No supported symbols supplied.',
+      allowedSymbols: SYMBOLS
+    });
+  }
+
+  timePatternRebuildState.running = true;
+  timePatternRebuildState.startedAt = new Date().toISOString();
+  timePatternRebuildState.finishedAt = null;
+  timePatternRebuildState.error = null;
+  timePatternRebuildState.results = [];
+  timePatternRebuildState.symbols = symbols;
+  timePatternRebuildState.currentSymbol = null;
+
+  /*
+   * Start the expensive operation without awaiting it.
+   * The HTTP response returns immediately.
+   */
+  setImmediate(async () => {
+    try {
+      for (const symbol of symbols) {
+        timePatternRebuildState.currentSymbol = symbol;
+        console.log(
+          `⏰ TIME-PATTERN REBUILD START ${symbol}`
+        );
+
+        const result = await rebuildTimePatternMemory({
+          symbols: [symbol]
+        });
+
+        timePatternRebuildState.results.push(
+          ...(Array.isArray(result) ? result : [result])
+        );
+
+        console.log(
+          `⏰ TIME-PATTERN REBUILD COMPLETE ${symbol}`
+        );
+      }
+
+      timePatternRebuildState.currentSymbol = null;
+      timePatternRebuildState.running = false;
+      timePatternRebuildState.finishedAt =
+        new Date().toISOString();
+
+      console.log(
+        '✅ TIME-PATTERN FULL REBUILD COMPLETE'
+      );
+    } catch (error) {
+      timePatternRebuildState.currentSymbol = null;
+      timePatternRebuildState.running = false;
+      timePatternRebuildState.finishedAt =
+        new Date().toISOString();
+      timePatternRebuildState.error =
+        error?.message || String(error);
+
+      console.error(
+        '❌ TIME-PATTERN REBUILD ERROR:',
+        error?.message || String(error)
+      );
+    }
+  });
+
+  return res.status(202).json({
+    success: true,
+    status: 'STARTED',
+    message:
+      'Time-pattern rebuild started in the background. Use /historical/time-pattern/rebuild-status to monitor progress.',
+    startedAt: timePatternRebuildState.startedAt,
+    symbols
+  });
 };
 
+router.get(
+  '/time-pattern/rebuild-status',
+  (req, res) => {
+    return res.json({
+      success: true,
+      ...timePatternRebuildState
+    });
+  }
+);
 router.get(
   '/time-pattern/rebuild',
   rebuildTimePatterns
