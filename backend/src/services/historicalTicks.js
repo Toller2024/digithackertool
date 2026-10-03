@@ -86,25 +86,18 @@ function requestHistory(symbol, count) {
       let response;
 
       try {
-        response = JSON.parse(
-          rawData.toString()
-        );
-      } catch (error) {
+        response = JSON.parse(rawData.toString());
+      } catch (_) {
         clearTimeout(timeout);
-
         finish(
           reject,
-          new Error(
-            'Invalid JSON received from Deriv'
-          )
+          new Error('Invalid JSON received from Deriv')
         );
-
         return;
       }
 
       if (response.error) {
         clearTimeout(timeout);
-
         finish(
           reject,
           new Error(
@@ -112,82 +105,28 @@ function requestHistory(symbol, count) {
               `Deriv historical request failed for ${symbol}`
           )
         );
-
         return;
       }
 
-      if (
-        response.msg_type !== 'history'
-      ) {
+      if (response.msg_type !== 'history') {
         return;
       }
 
       clearTimeout(timeout);
 
-      const prices =
-        response.history?.prices || [];
+      const prices = response.history?.prices || [];
+      const times = response.history?.times || [];
 
       const pipSize = Number(response.pip_size);
 
-      const times =
-        response.history?.times || [];
-
-      const ticks = [];
-
-      for (
-      let i = 0;
-      i < history.prices.length;
-      i++
-    ) {
-        const quote =
-          Number(history.prices[i]);
-
-        const epoch =
-          Number(history.times[i]);
-
-        if (
-          !Number.isFinite(quote) ||
-          !Number.isFinite(epoch)
-        ) {
-          continue;
-        }
-
-        const digit =
-          extractLastDigitFromQuote(quote, pipSize);
-
-        if (
-          !Number.isInteger(digit) ||
-          digit < 0 ||
-          digit > 9
-        ) {
-          continue;
-        }
-
-        ticks.push({
-          symbol,
-          quote,
-          digit,
-          epoch,
-          timestamp:
-            new Date(epoch * 1000)
-        });
-      }
-
-      console.log(
-    `📥 Received ${ticks.length} historical ticks for ${symbol} using pip_size=${pipSize}`
-  );
-
-      finish(
-        resolve,
-        {
-          prices,
-          times,
-          pipSize:
-            Number.isInteger(pipSize) && pipSize >= 0
-              ? pipSize
-              : null
-        }
-      );
+      finish(resolve, {
+        prices,
+        times,
+        pipSize:
+          Number.isInteger(pipSize) && pipSize >= 0
+            ? pipSize
+            : null
+      });
     });
 
     ws.on('error', (error) => {
@@ -350,6 +289,54 @@ export async function collectHistoricalTicks(
   const pipSize =
     history.pipSize ??
     await getPipSize(symbol);
+
+  const ticks = [];
+
+  for (
+    let i = 0;
+    i < history.prices.length;
+    i++
+  ) {
+    const quote =
+      Number(history.prices[i]);
+
+    const epoch =
+      Number(history.times[i]);
+
+    if (
+      !Number.isFinite(quote) ||
+      !Number.isFinite(epoch)
+    ) {
+      continue;
+    }
+
+    const digit =
+      extractLastDigitFromQuote(
+        quote,
+        pipSize
+      );
+
+    if (
+      !Number.isInteger(digit) ||
+      digit < 0 ||
+      digit > 9
+    ) {
+      continue;
+    }
+
+    ticks.push({
+      symbol,
+      quote,
+      digit,
+      epoch,
+      timestamp:
+        new Date(epoch * 1000)
+    });
+  }
+
+  console.log(
+    `📥 Received ${ticks.length} historical ticks for ${symbol} using pip_size=${pipSize}`
+  );
 
   const added =
     await saveTicks(ticks);
