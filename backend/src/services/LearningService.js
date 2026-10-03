@@ -1,5 +1,10 @@
 import Prediction from '../models/Prediction.js';
 import { predictNextDigit } from './PredictionEngine.js';
+import {
+  recordTimePatternTick,
+  recordTimePatternOutcome,
+  findTimePatternAlert
+} from './TimePatternMemoryService.js';
 
 /*
  * Process ticks sequentially for each symbol.
@@ -85,6 +90,25 @@ export function processTickForLearning({
 
       /*
        * ==========================================
+       * STEP 0
+       * TIME-PATTERN MEMORY
+       * ==========================================
+       */
+
+      const timePatternAlert =
+        await findTimePatternAlert({
+          symbol,
+          epoch
+        });
+
+      await recordTimePatternTick({
+        symbol,
+        digit,
+        epoch
+      });
+
+      /*
+       * ==========================================
        * STEP 1
        * RESOLVE PREVIOUS PREDICTION
        * ==========================================
@@ -121,6 +145,14 @@ export function processTickForLearning({
 
         await pending.save();
 
+        const timePatternOutcome =
+          await recordTimePatternOutcome({
+            symbol,
+            predictedDigit: pending.predictedDigit,
+            actualDigit: digit,
+            epoch
+          });
+
         resolved = {
           predictionId:
             pending._id.toString(),
@@ -148,7 +180,9 @@ export function processTickForLearning({
                 pending.probability *
                 100
               ).toFixed(2)
-            )
+            ),
+
+          timePatternOutcome
         };
 
         console.log(
@@ -177,6 +211,7 @@ export function processTickForLearning({
 
         return {
           resolved,
+          timePatternAlert,
 
           prediction: {
             id:
@@ -247,6 +282,7 @@ export function processTickForLearning({
 
         return {
           resolved,
+          timePatternAlert,
           prediction: null
         };
       }
@@ -268,6 +304,7 @@ export function processTickForLearning({
 
         return {
           resolved,
+          timePatternAlert,
           prediction: null
         };
       }
@@ -333,6 +370,7 @@ export function processTickForLearning({
 
       return {
         resolved,
+        timePatternAlert,
 
         prediction: {
           id:
