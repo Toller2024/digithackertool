@@ -203,6 +203,7 @@ export async function rebuildTimePatternMemory({ symbols }) {
       { symbol },
       {
         $set: {
+          occurrenceCount: 0,
           predictionSamples: 0,
           wins: 0,
           losses: 0,
@@ -238,7 +239,7 @@ export async function rebuildTimePatternMemory({ symbols }) {
         await TimePatternMemory.bulkWrite(Array.from(buckets.values()).map(item => ({
           updateOne: {
             filter: { symbol: item.symbol, digit: item.digit, granularity: item.granularity, timeSlot: item.timeSlot },
-            update: { $set: { occurrenceCount: item.occurrenceCount, lastObservedEpoch: item.lastObservedEpoch }, $setOnInsert: { firstObservedEpoch: item.firstObservedEpoch } },
+            update: { $inc: { occurrenceCount: item.occurrenceCount }, $set: { lastObservedEpoch: item.lastObservedEpoch }, $setOnInsert: { firstObservedEpoch: item.firstObservedEpoch } },
             upsert: true
           }
         })), { ordered: false });
