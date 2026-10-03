@@ -1,6 +1,7 @@
 import express from 'express';
 import DerivAPI from '../services/derivAPI.js';
 import Tick from '../models/Tick.js';
+import { getPipSize, extractLastDigitFromQuote } from '../services/digitUtils.js';
 import {
   processTickForLearning
 } from '../services/LearningService.js';
@@ -50,74 +51,19 @@ router.get('/test', (req, res) => {
  * EXTRACT FINAL DISPLAYED DIGIT
  * ==========================================
  */
-function extractLastDigit(tick) {
-  if (!tick) {
+async function extractLastDigit(tick) {
+  if (!tick || tick.quote === null || tick.quote === undefined) {
     return null;
   }
 
-  const rawQuote = tick.quote;
+  const pipSize =
+    Number.isInteger(Number(tick.pip_size))
+      ? Number(tick.pip_size)
+      : await getPipSize(tick.symbol);
 
-  if (
-    rawQuote === null ||
-    rawQuote === undefined
-  ) {
-    return null;
-  }
-
-  const text = String(rawQuote).trim();
-
-  if (!text) {
-    return null;
-  }
-
-  /*
-   * Decimal quote.
-   *
-   * Example:
-   * 48403.326 -> 6
-   */
-  if (text.includes('.')) {
-    const decimalPart =
-      text.split('.')[1];
-
-    if (
-      decimalPart &&
-      decimalPart.length > 0
-    ) {
-      const lastCharacter =
-        decimalPart[
-          decimalPart.length - 1
-        ];
-
-      const digit =
-        Number(lastCharacter);
-
-      if (
-        Number.isInteger(digit) &&
-        digit >= 0 &&
-        digit <= 9
-      ) {
-        return digit;
-      }
-    }
-  }
-
-  /*
-   * Whole number fallback.
-   *
-   * Example:
-   * 48403 -> 3
-   */
-  const number = Number(text);
-
-  if (!Number.isFinite(number)) {
-    return null;
-  }
-
-  return (
-    Math.abs(
-      Math.trunc(number)
-    ) % 10
+  return extractLastDigitFromQuote(
+    tick.quote,
+    pipSize
   );
 }
 
@@ -142,7 +88,7 @@ async function saveTick(tick) {
       Number(tick.epoch);
 
     const digit =
-      extractLastDigit(tick);
+      await extractLastDigit(tick);
 
     /*
      * Validate tick.
@@ -505,7 +451,7 @@ router.get(
              * ==================================
              */
             const digit =
-              extractLastDigit(
+              await extractLastDigit(
                 tick
               );
 
