@@ -527,6 +527,25 @@ router.get(
 
                 /*
                  * =================================
+                 * RECURRING TIME-PATTERN ALERT
+                 * =================================
+                 */
+                if (learning?.timePatternAlert) {
+                  console.log(
+                    `⏰ TIME-PATTERN ALERT ${symbol}:`,
+                    JSON.stringify(
+                      learning.timePatternAlert
+                    )
+                  );
+
+                  sendSSE(
+                    'timePatternAlert',
+                    learning.timePatternAlert
+                  );
+                }
+
+                /*
+                 * =================================
                  * NEW PREDICTION
                  * =================================
                  */
