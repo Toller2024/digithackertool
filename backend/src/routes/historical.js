@@ -10,6 +10,11 @@ import {
   TARGET_TICKS_PER_SYMBOL
 } from '../services/historicalTicks.js';
 
+import {
+  rebuildTimePatternMemory,
+  getTimePatternMemory
+} from '../services/TimePatternMemoryService.js';
+
 const router = express.Router();
 
 /*
@@ -238,6 +243,108 @@ const repairDigits = async (req, res) => {
 
 router.get('/repair-digits', repairDigits);
 router.post('/repair-digits', repairDigits);
+
+/*
+ * POST /historical/time-pattern/rebuild
+ *
+ * Builds recurring time-of-day digit memory from
+ * the existing MongoDB Tick collection.
+ *
+ * It does not change Tick documents.
+ */
+router.post(
+  '/time-pattern/rebuild',
+  async (req, res) => {
+    try {
+      const requested =
+        Array.isArray(req.body?.symbols)
+          ? req.body.symbols.map((item) =>
+              String(item).toUpperCase()
+            )
+          : SYMBOLS;
+
+      const symbols =
+        requested.filter((symbol) =>
+          SYMBOLS.includes(symbol)
+        );
+
+      const results =
+        await rebuildTimePatternMemory({
+          symbols
+        });
+
+      return res.json({
+        success: true,
+        message:
+          'Recurring time-pattern memory rebuilt from existing ticks.',
+        results
+      });
+    } catch (error) {
+      console.error(
+        '❌ TIME-PATTERN REBUILD ERROR:',
+        error?.message || String(error)
+      );
+
+      return res.status(500).json({
+        success: false,
+        error:
+          error?.message ||
+          'Time-pattern rebuild failed'
+      });
+    }
+  }
+);
+
+/*
+ * GET /historical/time-pattern/:symbol
+ *
+ * Diagnostic view of the learned time-pattern
+ * memory for one volatility.
+ */
+router.get(
+  '/time-pattern/:symbol',
+  async (req, res) => {
+    try {
+      const symbol =
+        req.params.symbol.toUpperCase();
+
+      if (!SYMBOLS.includes(symbol)) {
+        return res.status(400).json({
+          success: false,
+          error:
+            `Unsupported symbol: ${symbol}`,
+          allowedSymbols: SYMBOLS
+        });
+      }
+
+      const memory =
+        await getTimePatternMemory({
+          symbol,
+          limit:
+            req.query.limit || 20
+        });
+
+      return res.json({
+        success: true,
+        symbol,
+        count: memory.length,
+        memory
+      });
+    } catch (error) {
+      console.error(
+        '❌ TIME-PATTERN STATUS ERROR:',
+        error?.message || String(error)
+      );
+
+      return res.status(500).json({
+        success: false,
+        error:
+          error?.message ||
+          'Unable to read time-pattern memory'
+      });
+    }
+  }
+);
 
 /*
  * POST /historical/collect/:symbol
