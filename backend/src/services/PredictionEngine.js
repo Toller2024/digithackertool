@@ -1,5 +1,6 @@
 import Tick from '../models/Tick.js';
 import Prediction from '../models/Prediction.js';
+import { findTimePatternAlert } from './TimePatternMemoryService.js';
 
 /*
  * ==========================================
@@ -72,6 +73,13 @@ const GLOBAL_WEIGHT = 0.20;
 const TRANSITION_WEIGHT = 0.30;
 
 const PATTERN_WEIGHT = 0.40;
+
+/*
+ * Established recurring time-pattern evidence.
+ * This is intentionally small so time memory cannot
+ * overpower the tick/pattern model.
+ */
+const TIME_PATTERN_WEIGHT = 0.15;
 
 
 /*
@@ -696,7 +704,8 @@ function combineMemories({
   global,
   transition,
   patterns,
-  performance
+  performance,
+  timePattern
 }) {
   /*
    * Evidence-weighted ensemble.
@@ -813,6 +822,27 @@ function combineMemories({
       base[digit] * adjustment;
   }
 
+  /*
+   * Established time-pattern evidence.
+   *
+   * Only an ESTABLISHED record can influence the
+   * probability distribution. LEARNING/DEVELOPING
+   * records remain informational and contribute zero.
+   */
+  if (
+    timePattern?.status === 'ESTABLISHED' &&
+    validDigit(timePattern.digit) !== null
+  ) {
+    const timeDigit = validDigit(timePattern.digit);
+    const timeWeight = TIME_PATTERN_WEIGHT;
+
+    for (let digit = 0; digit < DIGIT_COUNT; digit++) {
+      adjusted[digit] *= (1 - timeWeight);
+    }
+
+    adjusted[timeDigit] += timeWeight;
+  }
+
   const total =
     adjusted.reduce(
       (sum, value) => sum + value,
@@ -844,7 +874,11 @@ function combineMemories({
     patternWeights,
     globalWeight,
     transitionWeight,
-    usedPatternWeight
+    usedPatternWeight,
+    timePatternWeight:
+      timePattern?.status === 'ESTABLISHED'
+        ? TIME_PATTERN_WEIGHT
+        : 0
   };
 }
 
@@ -1032,6 +1066,8 @@ export async function predictNextDigit(
       contextPerformanceSamples:
         0,
 
+      timePattern: null,
+
       patternAgreement:
         0,
 
@@ -1099,6 +1135,8 @@ export async function predictNextDigit(
 
       contextPerformanceSamples:
         0,
+
+      timePattern: null,
 
       patternAgreement:
         0,
@@ -1174,6 +1212,22 @@ export async function predictNextDigit(
       patterns
     );
 
+  /*
+   * ========================================
+   * TIME-PATTERN MEMORY
+   * ========================================
+   *
+   * Only established recurring 10-second
+   * patterns are allowed to influence the
+   * probability model. This keeps immature
+   * 3/3 or 4/4 streaks from becoming signals.
+   */
+  const timePattern =
+    await findTimePatternAlert({
+      symbol,
+      epoch: lastTick.epoch
+    });
+
 
   /*
    * ========================================
@@ -1189,7 +1243,9 @@ export async function predictNextDigit(
 
       patterns,
 
-      performance
+      performance,
+
+      timePattern
     });
 
 
@@ -1351,6 +1407,22 @@ export async function predictNextDigit(
 
     contextPerformanceSamples:
       performance.contextPredictions,
+
+    timePattern:
+      timePattern
+        ? {
+            status: timePattern.status,
+            digit: timePattern.digit,
+            timeLabel: timePattern.timeLabel,
+            timeWindowSeconds: timePattern.timeWindowSeconds,
+            predictionSamples: timePattern.predictionSamples,
+            wins: timePattern.wins,
+            losses: timePattern.losses,
+            winRate: timePattern.winRate,
+            currentWinStreak: timePattern.currentWinStreak,
+            bestWinStreak: timePattern.bestWinStreak
+          }
+        : null,
 
     patternAgreement:
       patternAgreement.agreement[
@@ -1618,7 +1690,11 @@ export async function predictNextDigit(
           pattern6Samples:
             patterns[6]
               ?.counts[digit] ||
-            0
+            0,
+
+          timePatternMatch:
+            timePattern?.status === 'ESTABLISHED' &&
+            validDigit(timePattern.digit) === digit
         })
       )
   };
