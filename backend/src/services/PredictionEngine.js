@@ -1043,7 +1043,7 @@ export async function predictNextDigit(
       signal: 'NO_ENTRY',
 
       strategy:
-        'adaptive-multi-scale-learning',
+        'adaptive-multi-scale-time-learning',
 
       historySize:
         ticks.length,
@@ -1113,7 +1113,7 @@ export async function predictNextDigit(
       signal: 'NO_ENTRY',
 
       strategy:
-        'adaptive-multi-scale-learning',
+        'adaptive-multi-scale-time-learning',
 
       historySize:
         ticks.length,
@@ -1305,14 +1305,20 @@ export async function predictNextDigit(
    * ========================================
    */
 
+  const timePatternSupportsBest =
+    timePattern?.status === 'ESTABLISHED' &&
+    validDigit(timePattern.digit) === best.digit;
+
+  const effectivePatternAgreement =
+    Math.max(
+      patternAgreement.agreement[best.digit] || 0,
+      timePatternSupportsBest ? MIN_PATTERN_AGREEMENT : 0
+    );
+
   const signal =
     getSignal(
       best.probability,
-
-      patternAgreement
-        .agreement[
-          best.digit
-        ] || 0
+      effectivePatternAgreement
     );
 
 
@@ -1379,7 +1385,7 @@ export async function predictNextDigit(
     signal,
 
     strategy:
-      'adaptive-multi-scale-learning',
+      'adaptive-multi-scale-time-learning',
 
     historySize:
       ticks.length,
@@ -1429,6 +1435,8 @@ export async function predictNextDigit(
         best.digit
       ] || 0,
 
+    effectivePatternAgreement,
+
     ready:
       true,
 
@@ -1472,6 +1480,10 @@ export async function predictNextDigit(
         patternAgreement.agreement[
           best.digit
         ] || 0,
+
+      effectivePatternAgreement,
+
+      timePatternSupportsBest,
 
       weightedPatternAgreement:
         Number(
