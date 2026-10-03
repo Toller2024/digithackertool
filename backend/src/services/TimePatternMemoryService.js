@@ -216,7 +216,7 @@ export async function rebuildTimePatternMemory({ symbols }) {
         await TimePatternMemory.bulkWrite(Array.from(buckets.values()).map(item => ({
           updateOne: {
             filter: { symbol: item.symbol, digit: item.digit, granularity: item.granularity, timeSlot: item.timeSlot },
-            update: { $inc: { occurrenceCount: item.occurrenceCount }, $set: { lastObservedEpoch: item.lastObservedEpoch }, $setOnInsert: { firstObservedEpoch: item.firstObservedEpoch } },
+            update: { $set: { occurrenceCount: item.occurrenceCount, lastObservedEpoch: item.lastObservedEpoch }, $setOnInsert: { firstObservedEpoch: item.firstObservedEpoch } },
             upsert: true
           }
         })), { ordered: false });
