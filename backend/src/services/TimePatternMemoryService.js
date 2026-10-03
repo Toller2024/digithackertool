@@ -1,4 +1,6 @@
 import TimePatternMemory from '../models/TimePatternMemory.js';
+import Prediction from '../models/Prediction.js';
+import Tick from '../models/Tick.js';
 
 const MIN_DEVELOPING_SAMPLES = 10;
 const MIN_ESTABLISHED_SAMPLES = 20;
@@ -187,11 +189,31 @@ export async function getTimePatternMemory({ symbol, limit = 20 }) {
 }
 
 export async function rebuildTimePatternMemory({ symbols }) {
-  const Tick = (await import('../models/Tick.js')).default;
   const list = Array.isArray(symbols) && symbols.length ? symbols : ['R_10', 'R_25', 'R_50', 'R_75', 'R_100'];
   const results = [];
 
   for (const symbol of list) {
+    /*
+     * Reset only the derived prediction-outcome counters.
+     * Tick documents themselves are never modified.
+     * This makes a rebuild repeatable while preserving
+     * the actual historical tick collection.
+     */
+    await TimePatternMemory.updateMany(
+      { symbol },
+      {
+        $set: {
+          predictionSamples: 0,
+          wins: 0,
+          losses: 0,
+          lastWinEpoch: null,
+          lastLossEpoch: null,
+          currentWinStreak: 0,
+          bestWinStreak: 0
+        }
+      }
+    );
+
     let processed = 0;
     const cursor = Tick.find({ symbol }).select({ digit: 1, epoch: 1 }).sort({ epoch: 1 }).lean().cursor();
     const buckets = new Map();
@@ -234,7 +256,42 @@ export async function rebuildTimePatternMemory({ symbols }) {
       })), { ordered: false });
     }
 
-    results.push({ symbol, processed });
+    /*
+     * Re-apply every already-resolved prediction so
+     * existing WIN/LOSS learning is included in the
+     * time-pattern memory from the start.
+     */
+    const predictions = await Prediction.find({
+      symbol,
+      result: { $in: ['WIN', 'LOSS'] },
+      actualDigit: { $gte: 0, $lte: 9 },
+      resolvedAt: { $ne: null }
+    })
+      .select({ predictedDigit: 1, actualDigit: 1, resolvedAt: 1 })
+      .sort({ resolvedAt: 1 })
+      .lean();
+
+    for (const prediction of predictions) {
+      const resolvedEpoch =
+        Math.floor(
+          new Date(prediction.resolvedAt).getTime() / 1000
+        );
+
+      if (!Number.isFinite(resolvedEpoch)) continue;
+
+      await recordTimePatternOutcome({
+        symbol,
+        predictedDigit: prediction.predictedDigit,
+        actualDigit: prediction.actualDigit,
+        epoch: resolvedEpoch
+      });
+    }
+
+    results.push({
+      symbol,
+      processed,
+      resolvedPredictionsApplied: predictions.length
+    });
   }
 
   return results;
