@@ -10,12 +10,10 @@ const ESTABLISHED_WIN_RATE = 0.70;
 function getTimeSlots(epoch) {
   const date = new Date(Number(epoch) * 1000);
   if (Number.isNaN(date.getTime())) return null;
-
   const secondsOfDay =
     date.getUTCHours() * 3600 +
     date.getUTCMinutes() * 60 +
     date.getUTCSeconds();
-
   return {
     tenSecondSlot: Math.floor(secondsOfDay / 10),
     minuteSlot: Math.floor(secondsOfDay / 60)
@@ -38,9 +36,7 @@ function classify(memory) {
   const rate = total > 0 ? memory.wins / total : 0;
   if (memory.predictionSamples >= MIN_ESTABLISHED_SAMPLES &&
       memory.wins >= MIN_ESTABLISHED_WINS &&
-      total > 0 && rate >= ESTABLISHED_WIN_RATE) {
-    return 'ESTABLISHED';
-  }
+      total > 0 && rate >= ESTABLISHED_WIN_RATE) return 'ESTABLISHED';
   if (memory.predictionSamples >= MIN_DEVELOPING_SAMPLES) return 'DEVELOPING';
   return 'LEARNING';
 }
@@ -54,47 +50,32 @@ export async function recordTimePatternTick({ symbol, digit, epoch }) {
   if (!symbol || !Number.isInteger(digit) || digit < 0 || digit > 9 || !Number.isFinite(Number(epoch))) return null;
   const slots = getTimeSlots(epoch);
   if (!slots) return null;
-
   await TimePatternMemory.bulkWrite([
     { updateOne: {
       filter: { symbol, digit, granularity: '10s', timeSlot: slots.tenSecondSlot },
-      update: {
-        $inc: { occurrenceCount: 1 },
-        $set: { lastObservedEpoch: Number(epoch) },
-        $setOnInsert: { firstObservedEpoch: Number(epoch) }
-      },
+      update: { $inc: { occurrenceCount: 1 }, $set: { lastObservedEpoch: Number(epoch) }, $setOnInsert: { firstObservedEpoch: Number(epoch) } },
       upsert: true
     }},
     { updateOne: {
       filter: { symbol, digit, granularity: '60s', timeSlot: slots.minuteSlot },
-      update: {
-        $inc: { occurrenceCount: 1 },
-        $set: { lastObservedEpoch: Number(epoch) },
-        $setOnInsert: { firstObservedEpoch: Number(epoch) }
-      },
+      update: { $inc: { occurrenceCount: 1 }, $set: { lastObservedEpoch: Number(epoch) }, $setOnInsert: { firstObservedEpoch: Number(epoch) } },
       upsert: true
     }}
   ], { ordered: false });
-
   return slots;
 }
 
 export async function recordTimePatternOutcome({ symbol, predictedDigit, actualDigit, epoch }) {
   if (!symbol || !Number.isInteger(predictedDigit) || predictedDigit < 0 || predictedDigit > 9 ||
       !Number.isInteger(actualDigit) || actualDigit < 0 || actualDigit > 9 || !Number.isFinite(Number(epoch))) return null;
-
   const slots = getTimeSlots(epoch);
   if (!slots) return null;
   const won = predictedDigit === actualDigit;
 
   async function updateMemory(granularity, timeSlot) {
-    const existing = await TimePatternMemory.findOne({
-      symbol, digit: predictedDigit, granularity, timeSlot
-    }).lean();
-
+    const existing = await TimePatternMemory.findOne({ symbol, digit: predictedDigit, granularity, timeSlot }).lean();
     const previousStreak = Number(existing?.currentWinStreak || 0);
     const nextStreak = won ? previousStreak + 1 : 0;
-
     const update = {
       $inc: { predictionSamples: 1, [won ? 'wins' : 'losses']: 1 },
       $set: {
@@ -104,11 +85,7 @@ export async function recordTimePatternOutcome({ symbol, predictedDigit, actualD
       },
       $setOnInsert: { firstObservedEpoch: Number(epoch) }
     };
-
-    if (won) {
-      update.$set.bestWinStreak = Math.max(Number(existing?.bestWinStreak || 0), nextStreak);
-    }
-
+    if (won) update.$set.bestWinStreak = Math.max(Number(existing?.bestWinStreak || 0), nextStreak);
     return TimePatternMemory.findOneAndUpdate(
       { symbol, digit: predictedDigit, granularity, timeSlot },
       update,
@@ -120,13 +97,8 @@ export async function recordTimePatternOutcome({ symbol, predictedDigit, actualD
     updateMemory('10s', slots.tenSecondSlot),
     updateMemory('60s', slots.minuteSlot)
   ]);
-
-  const total = Number(tenSecond.wins || 0) + Number(tenSecond.losses || 0);
   return {
-    symbol,
-    digit: predictedDigit,
-    actualDigit,
-    won,
+    symbol, digit: predictedDigit, actualDigit, won,
     granularity: '10s',
     timeSlot: slots.tenSecondSlot,
     timeLabel: slotLabel('10s', slots.tenSecondSlot),
@@ -145,34 +117,25 @@ export async function findTimePatternAlert({ symbol, epoch }) {
   if (!symbol || !Number.isFinite(Number(epoch))) return null;
   const slots = getTimeSlots(epoch);
   if (!slots) return null;
-
   const candidates = await TimePatternMemory.find({
-    symbol,
-    granularity: '10s',
-    timeSlot: slots.tenSecondSlot,
+    symbol, granularity: '10s', timeSlot: slots.tenSecondSlot,
     predictionSamples: { $gte: MIN_ESTABLISHED_SAMPLES }
   }).sort({ wins: -1, predictionSamples: -1 }).limit(10).lean();
-
   const established = candidates.find((candidate) => {
     const total = Number(candidate.wins || 0) + Number(candidate.losses || 0);
     const rate = total > 0 ? candidate.wins / total : 0;
     return candidate.predictionSamples >= MIN_ESTABLISHED_SAMPLES &&
-      candidate.wins >= MIN_ESTABLISHED_WINS &&
-      total > 0 && rate >= ESTABLISHED_WIN_RATE;
+      candidate.wins >= MIN_ESTABLISHED_WINS && total > 0 && rate >= ESTABLISHED_WIN_RATE;
   });
-
   if (!established) return null;
-
   const total = established.wins + established.losses;
   return {
     type: 'time-pattern-alert',
-    symbol,
-    digit: established.digit,
+    symbol, digit: established.digit,
     timeLabel: slotLabel('10s', established.timeSlot),
     timeWindowSeconds: 10,
     predictionSamples: established.predictionSamples,
-    wins: established.wins,
-    losses: established.losses,
+    wins: established.wins, losses: established.losses,
     winRate: Number((established.wins / total * 100).toFixed(2)),
     status: 'ESTABLISHED',
     currentWinStreak: established.currentWinStreak,
@@ -193,105 +156,175 @@ export async function rebuildTimePatternMemory({ symbols }) {
   const results = [];
 
   for (const symbol of list) {
-    /*
-     * Reset only the derived prediction-outcome counters.
-     * Tick documents themselves are never modified.
-     * This makes a rebuild repeatable while preserving
-     * the actual historical tick collection.
-     */
     await TimePatternMemory.updateMany(
       { symbol },
-      {
-        $set: {
-          occurrenceCount: 0,
-          predictionSamples: 0,
-          wins: 0,
-          losses: 0,
-          lastWinEpoch: null,
-          lastLossEpoch: null,
-          currentWinStreak: 0,
-          bestWinStreak: 0
-        }
-      }
+      { $set: {
+        occurrenceCount: 0, predictionSamples: 0, wins: 0, losses: 0,
+        lastWinEpoch: null, lastLossEpoch: null, currentWinStreak: 0, bestWinStreak: 0
+      }}
     );
 
     let processed = 0;
-    const cursor = Tick.find({ symbol }).select({ digit: 1, epoch: 1 }).sort({ epoch: 1 }).lean().cursor();
+    const cursor = Tick.find({ symbol })
+      .select({ digit: 1, epoch: 1 })
+      .sort({ epoch: 1 })
+      .lean()
+      .cursor();
     const buckets = new Map();
 
     for await (const tick of cursor) {
       if (!Number.isInteger(tick.digit) || !Number.isFinite(Number(tick.epoch))) continue;
       const slots = getTimeSlots(tick.epoch);
       if (!slots) continue;
-      const keys = [
-        ['10s', slots.tenSecondSlot],
-        ['60s', slots.minuteSlot]
-      ];
-      for (const [granularity, timeSlot] of keys) {
+
+      for (const [granularity, timeSlot] of [['10s', slots.tenSecondSlot], ['60s', slots.minuteSlot]]) {
         const key = symbol + ':' + tick.digit + ':' + granularity + ':' + timeSlot;
-        const item = buckets.get(key) || { symbol, digit: tick.digit, granularity, timeSlot, occurrenceCount: 0, firstObservedEpoch: Number(tick.epoch), lastObservedEpoch: Number(tick.epoch) };
+        const item = buckets.get(key) || {
+          symbol, digit: tick.digit, granularity, timeSlot,
+          occurrenceCount: 0,
+          firstObservedEpoch: Number(tick.epoch),
+          lastObservedEpoch: Number(tick.epoch)
+        };
         item.occurrenceCount += 1;
         item.lastObservedEpoch = Number(tick.epoch);
         buckets.set(key, item);
       }
+
       processed += 1;
+
       if (buckets.size >= 5000) {
-        await TimePatternMemory.bulkWrite(Array.from(buckets.values()).map(item => ({
-          updateOne: {
-            filter: { symbol: item.symbol, digit: item.digit, granularity: item.granularity, timeSlot: item.timeSlot },
-            update: { $inc: { occurrenceCount: item.occurrenceCount }, $set: { lastObservedEpoch: item.lastObservedEpoch }, $setOnInsert: { firstObservedEpoch: item.firstObservedEpoch } },
-            upsert: true
-          }
-        })), { ordered: false });
+        await TimePatternMemory.bulkWrite(
+          Array.from(buckets.values()).map(item => ({
+            updateOne: {
+              filter: { symbol: item.symbol, digit: item.digit, granularity: item.granularity, timeSlot: item.timeSlot },
+              update: {
+                $inc: { occurrenceCount: item.occurrenceCount },
+                $set: { lastObservedEpoch: item.lastObservedEpoch },
+                $setOnInsert: { firstObservedEpoch: item.firstObservedEpoch }
+              },
+              upsert: true
+            }
+          })),
+          { ordered: false }
+        );
         buckets.clear();
       }
     }
 
     if (buckets.size) {
-      await TimePatternMemory.bulkWrite(Array.from(buckets.values()).map(item => ({
-        updateOne: {
-          filter: { symbol: item.symbol, digit: item.digit, granularity: item.granularity, timeSlot: item.timeSlot },
-          update: { $inc: { occurrenceCount: item.occurrenceCount }, $set: { lastObservedEpoch: item.lastObservedEpoch }, $setOnInsert: { firstObservedEpoch: item.firstObservedEpoch } },
-          upsert: true
-        }
-      })), { ordered: false });
+      await TimePatternMemory.bulkWrite(
+        Array.from(buckets.values()).map(item => ({
+          updateOne: {
+            filter: { symbol: item.symbol, digit: item.digit, granularity: item.granularity, timeSlot: item.timeSlot },
+            update: {
+              $inc: { occurrenceCount: item.occurrenceCount },
+              $set: { lastObservedEpoch: item.lastObservedEpoch },
+              $setOnInsert: { firstObservedEpoch: item.firstObservedEpoch }
+            },
+            upsert: true
+          }
+        })),
+        { ordered: false }
+      );
     }
 
     /*
-     * Re-apply every already-resolved prediction so
-     * existing WIN/LOSS learning is included in the
-     * time-pattern memory from the start.
+     * IMPORTANT PERFORMANCE FIX:
+     * The old rebuild called recordTimePatternOutcome() for every
+     * resolved prediction, causing several MongoDB operations per
+     * prediction. We aggregate all outcomes in memory first and then
+     * write them in bulk.
      */
     const predictions = await Prediction.find({
       symbol,
       result: { $in: ['WIN', 'LOSS'] },
       actualDigit: { $gte: 0, $lte: 9 },
+      predictedDigit: { $gte: 0, $lte: 9 },
       resolvedAt: { $ne: null }
     })
       .select({ predictedDigit: 1, actualDigit: 1, resolvedAt: 1 })
       .sort({ resolvedAt: 1 })
       .lean();
 
+    const outcomeBuckets = new Map();
+
     for (const prediction of predictions) {
-      const resolvedEpoch =
-        Math.floor(
-          new Date(prediction.resolvedAt).getTime() / 1000
-        );
-
+      const resolvedEpoch = Math.floor(new Date(prediction.resolvedAt).getTime() / 1000);
       if (!Number.isFinite(resolvedEpoch)) continue;
+      const slots = getTimeSlots(resolvedEpoch);
+      if (!slots) continue;
+      const won = prediction.predictedDigit === prediction.actualDigit;
 
-      await recordTimePatternOutcome({
-        symbol,
-        predictedDigit: prediction.predictedDigit,
-        actualDigit: prediction.actualDigit,
-        epoch: resolvedEpoch
-      });
+      for (const [granularity, timeSlot] of [['10s', slots.tenSecondSlot], ['60s', slots.minuteSlot]]) {
+        const key = symbol + ':' + prediction.predictedDigit + ':' + granularity + ':' + timeSlot;
+        const item = outcomeBuckets.get(key) || {
+          symbol,
+          digit: prediction.predictedDigit,
+          granularity,
+          timeSlot,
+          predictionSamples: 0,
+          wins: 0,
+          losses: 0,
+          currentWinStreak: 0,
+          bestWinStreak: 0,
+          lastObservedEpoch: resolvedEpoch,
+          firstObservedEpoch: resolvedEpoch,
+          lastWinEpoch: null,
+          lastLossEpoch: null
+        };
+
+        item.predictionSamples += 1;
+        item.lastObservedEpoch = resolvedEpoch;
+
+        if (won) {
+          item.wins += 1;
+          item.currentWinStreak += 1;
+          item.bestWinStreak = Math.max(item.bestWinStreak, item.currentWinStreak);
+          item.lastWinEpoch = resolvedEpoch;
+        } else {
+          item.losses += 1;
+          item.currentWinStreak = 0;
+          item.lastLossEpoch = resolvedEpoch;
+        }
+
+        outcomeBuckets.set(key, item);
+      }
+    }
+
+    if (outcomeBuckets.size) {
+      const writes = Array.from(outcomeBuckets.values()).map(item => ({
+        updateOne: {
+          filter: {
+            symbol: item.symbol,
+            digit: item.digit,
+            granularity: item.granularity,
+            timeSlot: item.timeSlot
+          },
+          update: { $set: {
+            predictionSamples: item.predictionSamples,
+            wins: item.wins,
+            losses: item.losses,
+            currentWinStreak: item.currentWinStreak,
+            bestWinStreak: item.bestWinStreak,
+            lastObservedEpoch: item.lastObservedEpoch,
+            firstObservedEpoch: item.firstObservedEpoch,
+            lastWinEpoch: item.lastWinEpoch,
+            lastLossEpoch: item.lastLossEpoch
+          }},
+          upsert: true
+        }
+      }));
+
+      for (let i = 0; i < writes.length; i += 1000) {
+        await TimePatternMemory.bulkWrite(writes.slice(i, i + 1000), { ordered: false });
+      }
     }
 
     results.push({
       symbol,
       processed,
-      resolvedPredictionsApplied: predictions.length
+      resolvedPredictionsApplied: predictions.length,
+      timePatternBuckets: outcomeBuckets.size
     });
   }
 
