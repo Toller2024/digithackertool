@@ -269,7 +269,12 @@ export function processTickForLearning({
 
       const prediction =
         await predictNextDigit(
-          symbol
+          symbol,
+          {
+            symbol,
+            digit,
+            epoch
+          }
         );
 
       if (
