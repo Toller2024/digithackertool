@@ -251,6 +251,9 @@ export function processTickForLearning({
             transitionSamples:
               existing.transitionSamples,
 
+            timePattern:
+              timePatternAlert,
+
             status:
               existing.result
           }
@@ -404,6 +407,11 @@ export function processTickForLearning({
 
           transitionSamples:
             prediction.transitionSamples,
+
+          timePattern:
+            prediction.timePattern ||
+            timePatternAlert ||
+            null,
 
           status:
             'PENDING'
