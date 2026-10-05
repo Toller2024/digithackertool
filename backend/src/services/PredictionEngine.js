@@ -1015,7 +1015,8 @@ export async function predictNextDigit(
   const ticks =
     await getHistoricalTicks(
       symbol,
-      HISTORY_LIMIT
+      HISTORY_LIMIT,
+      currentTick
     );
 
 
