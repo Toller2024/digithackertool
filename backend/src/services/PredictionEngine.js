@@ -99,6 +99,14 @@ const ENTRY_PROBABILITY = 0.15;
 
 const WAIT_PROBABILITY = 0.12;
 
+/*
+ * Live prediction history cache.
+ * The first prediction after a backend restart loads the
+ * 10,000-tick window from MongoDB. Subsequent live ticks
+ * are appended in memory instead of querying 10,000
+ * documents on every tick.
+ */
+const historyCache = new Map();
 
 /*
  * Strong disagreement protection.
@@ -139,19 +147,54 @@ function validDigit(value) {
 
 export async function getHistoricalTicks(
   symbol,
-  limit = HISTORY_LIMIT
+  limit = HISTORY_LIMIT,
+  currentTick = null
 ) {
-  const ticks =
-    await Tick.find({
-      symbol
-    })
-      .sort({
-        epoch: -1
-      })
-      .limit(limit)
-      .lean();
+  let cached = historyCache.get(symbol);
 
-  return ticks.reverse();
+  if (!cached) {
+    const ticks =
+      await Tick.find({
+        symbol
+      })
+        .sort({
+          epoch: -1
+        })
+        .limit(limit)
+        .lean();
+
+    cached = ticks.reverse();
+    historyCache.set(symbol, cached);
+  }
+
+  /*
+   * Add the current live tick when it is newer than
+   * the cached window. This keeps prediction history
+   * synchronized without another 10,000-document query.
+   */
+  if (
+    currentTick &&
+    Number.isFinite(Number(currentTick.epoch)) &&
+    validDigit(currentTick.digit) !== null
+  ) {
+    const epoch = Number(currentTick.epoch);
+    const last = cached[cached.length - 1];
+
+    if (!last || Number(last.epoch) < epoch) {
+      cached.push({
+        symbol,
+        quote: Number(currentTick.quote),
+        digit: validDigit(currentTick.digit),
+        epoch
+      });
+
+      if (cached.length > limit) {
+        cached.splice(0, cached.length - limit);
+      }
+    }
+  }
+
+  return cached;
 }
 
 
@@ -328,12 +371,7 @@ function calculatePatternMemory(ticks) {
       pattern: [],
       reliability: 0
     };
-  }
 
-  /*
-   * Build the current contexts once.
-   */
-  for (const length of PATTERN_LENGTHS) {
     if (ticks.length >= length) {
       results[length].pattern =
         ticks
@@ -343,72 +381,11 @@ function calculatePatternMemory(ticks) {
   }
 
   /*
-   * One pass through history.
-   *
-   * For every historical position, count the digit
-   * immediately following each 2-6 digit context.
-   *
-   * This replaces five separate full-history scans.
-   */
-  const maps = {};
-
-  for (const length of PATTERN_LENGTHS) {
-    maps[length] = new Map();
-  }
-
-  for (let i = 0; i < ticks.length; i++) {
-    for (const length of PATTERN_LENGTHS) {
-      const nextIndex = i + length;
-
-      if (nextIndex >= ticks.length - 1) {
-        continue;
-      }
-
-      if (nextIndex >= ticks.length) {
-        continue;
-      }
-
-      const next = validDigit(ticks[nextIndex]?.digit);
-
-      if (next === null) {
-        continue;
-      }
-
-      const context = [];
-
-      let valid = true;
-
-      for (let j = 0; j < length; j++) {
-        const digit = validDigit(ticks[i + j]?.digit);
-
-        if (digit === null) {
-          valid = false;
-          break;
-        }
-
-        context.push(digit);
-      }
-
-      if (!valid) {
-        continue;
-      }
-
-      const key = context.join(',');
-
-      let counts = maps[length].get(key);
-
-      if (!counts) {
-        counts = Array(DIGIT_COUNT).fill(0);
-        maps[length].set(key, counts);
-      }
-
-      counts[next]++;
-    }
-  }
-
-  /*
-   * Convert only the five CURRENT contexts into
-   * probability distributions.
+   * Only count historical contexts matching the CURRENT
+   * contexts. The old implementation built maps for every
+   * possible 2-6 digit sequence on every live tick. With
+   * 10,000 ticks that created a large amount of unnecessary
+   * CPU and memory work and could delay the SSE prediction.
    */
   for (const length of PATTERN_LENGTHS) {
     const pattern = results[length].pattern;
@@ -420,12 +397,33 @@ function calculatePatternMemory(ticks) {
       continue;
     }
 
-    const counts =
-      maps[length].get(pattern.join(',')) ||
-      Array(DIGIT_COUNT).fill(0);
+    const counts = Array(DIGIT_COUNT).fill(0);
 
-    results[length].counts = [...counts];
+    /*
+     * The final current context must not be used to train
+     * itself. Therefore the historical next digit must be
+     * before the final tick.
+     */
+    for (let i = 0; i + length < ticks.length - 1; i++) {
+      let matches = true;
 
+      for (let j = 0; j < length; j++) {
+        if (validDigit(ticks[i + j]?.digit) !== pattern[j]) {
+          matches = false;
+          break;
+        }
+      }
+
+      if (!matches) continue;
+
+      const next = validDigit(ticks[i + length]?.digit);
+
+      if (next !== null) {
+        counts[next]++;
+      }
+    }
+
+    results[length].counts = counts;
     results[length].total =
       counts.reduce((sum, value) => sum + value, 0);
 
@@ -443,7 +441,6 @@ function calculatePatternMemory(ticks) {
 
   return results;
 }
-
 /*
  * ==========================================
  * WIN/LOSS PERFORMANCE MEMORY
@@ -999,7 +996,8 @@ function getSignal(
  */
 
 export async function predictNextDigit(
-  symbol
+  symbol,
+  currentTick = null
 ) {
   if (!symbol) {
     throw new Error(
