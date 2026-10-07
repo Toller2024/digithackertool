@@ -150,7 +150,7 @@ export function processTickForLearning({
             symbol,
             predictedDigit: pending.predictedDigit,
             actualDigit: digit,
-            epoch
+            epoch: pending.predictionEpoch
           });
 
         resolved = {
