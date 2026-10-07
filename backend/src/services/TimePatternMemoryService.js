@@ -3,9 +3,29 @@ import Prediction from '../models/Prediction.js';
 import Tick from '../models/Tick.js';
 
 const MIN_DEVELOPING_SAMPLES = 10;
-const MIN_ESTABLISHED_SAMPLES = 20;
-const MIN_ESTABLISHED_WINS = 14;
-const ESTABLISHED_WIN_RATE = 0.70;
+
+// Historical time-pattern evidence is now the primary source of truth.
+// 80,000+ collected ticks must be used to discover recurring digit/time
+// relationships instead of waiting for 20 live prediction outcomes.
+//
+// A 60-second slot has enough repeated observations in our current
+// ~18-day history to make a useful statistical comparison. A 10-second
+// slot is kept available, but requires the same minimum evidence.
+const MIN_HISTORICAL_OBSERVATIONS = 100;
+const MIN_HISTORICAL_DIGIT_OCCURRENCES = 20;
+const MIN_HISTORICAL_SHARE = 0.15; // digit must appear at least 15% of the slot observations
+const BASELINE_DIGIT_SHARE = 0.10; // 10 digits => 10% baseline
+const MIN_VALIDATED_PREDICTIONS = 20;
+const MIN_VALIDATED_WIN_RATE = 0.70;
+
+function wilsonLowerBound(wins, total, z = 1.96) {
+  if (!Number.isFinite(wins) || !Number.isFinite(total) || total <= 0) return 0;
+  const p = wins / total;
+  const denominator = 1 + (z * z) / total;
+  const centre = p + (z * z) / (2 * total);
+  const margin = z * Math.sqrt((p * (1 - p) + (z * z) / (4 * total)) / total);
+  return (centre - margin) / denominator;
+}
 
 function getTimeSlots(epoch) {
   const date = new Date(Number(epoch) * 1000);
@@ -120,10 +140,25 @@ export async function findTimePatternAlert({ symbol, epoch }) {
   if (!slots) return null;
 
   /*
-   * Check both recurring time windows.
-   * Prefer the more precise 10-second pattern when it is
-   * genuinely established; otherwise allow an established
-   * 60-second pattern to trigger the alert.
+   * IMPORTANT:
+   * We no longer call a pattern "established" merely because 20
+   * predictions happened to win.
+   *
+   * The historical database is the discovery set. For the current
+   * recurring UTC time slot we compare ALL ten digits using the
+   * occurrenceCount accumulated from the full historical tick set.
+   *
+   * Example:
+   *   digit 7 = 34 occurrences out of 180 observations = 18.9%
+   *   baseline = 10%
+   *
+   * This is a real historical frequency, not a fabricated confidence.
+   * Wilson's lower confidence bound must also stay above the 10%
+   * baseline so a small/random fluctuation is rejected.
+   *
+   * If live resolved predictions exist for the same slot/digit, they
+   * are used as an additional validation layer. Validation can reject
+   * a weak pattern, but it cannot manufacture a historical pattern.
    */
   const granularities = [
     {
@@ -143,65 +178,130 @@ export async function findTimePatternAlert({ symbol, epoch }) {
       symbol,
       granularity: window.granularity,
       timeSlot: window.timeSlot,
-      predictionSamples: { $gte: MIN_ESTABLISHED_SAMPLES }
-    })
-      .sort({ wins: -1, predictionSamples: -1 })
-      .limit(10)
-      .lean();
+      occurrenceCount: { $gte: 1 }
+    }).lean();
 
-    const established = candidates.find((candidate) => {
-      const total =
-        Number(candidate.wins || 0) +
-        Number(candidate.losses || 0);
+    if (!candidates.length) continue;
 
-      const rate =
-        total > 0
-          ? Number(candidate.wins || 0) / total
-          : 0;
+    const historicalTotal = candidates.reduce(
+      (sum, item) => sum + Number(item.occurrenceCount || 0),
+      0
+    );
 
-      return (
-        candidate.predictionSamples >= MIN_ESTABLISHED_SAMPLES &&
-        candidate.wins >= MIN_ESTABLISHED_WINS &&
-        total > 0 &&
-        rate >= ESTABLISHED_WIN_RATE
+    if (historicalTotal < MIN_HISTORICAL_OBSERVATIONS) continue;
+
+    const scored = candidates
+      .map((candidate) => {
+        const occurrences = Number(candidate.occurrenceCount || 0);
+        const historicalShare =
+          historicalTotal > 0 ? occurrences / historicalTotal : 0;
+
+        const historicalLowerBound =
+          wilsonLowerBound(occurrences, historicalTotal);
+
+        const validationTotal =
+          Number(candidate.predictionSamples || 0);
+
+        const validationWins =
+          Number(candidate.wins || 0);
+
+        const validationWinRate =
+          validationTotal > 0
+            ? validationWins / validationTotal
+            : null;
+
+        const validationReady =
+          validationTotal >= MIN_VALIDATED_PREDICTIONS;
+
+        const validationPass =
+          !validationReady ||
+          validationWinRate >= MIN_VALIDATED_WIN_RATE;
+
+        const historicalPass =
+          occurrences >= MIN_HISTORICAL_DIGIT_OCCURRENCES &&
+          historicalShare >= MIN_HISTORICAL_SHARE &&
+          historicalLowerBound > BASELINE_DIGIT_SHARE;
+
+        return {
+          ...candidate,
+          occurrences,
+          historicalTotal,
+          historicalShare,
+          historicalLowerBound,
+          validationTotal,
+          validationWins,
+          validationWinRate,
+          validationReady,
+          validationPass,
+          historicalPass
+        };
+      })
+      .filter((candidate) =>
+        candidate.historicalPass &&
+        candidate.validationPass
+      )
+      .sort((a, b) =>
+        b.historicalShare - a.historicalShare ||
+        b.historicalLowerBound - a.historicalLowerBound ||
+        b.occurrences - a.occurrences
       );
-    });
 
-    if (!established) continue;
+    const best = scored[0];
+    if (!best) continue;
 
-    const total =
-      Number(established.wins || 0) +
-      Number(established.losses || 0);
+    const historicalRatePercent =
+      Number((best.historicalShare * 100).toFixed(2));
+
+    const historicalLowerPercent =
+      Number((best.historicalLowerBound * 100).toFixed(2));
+
+    const validationRatePercent =
+      best.validationWinRate == null
+        ? null
+        : Number((best.validationWinRate * 100).toFixed(2));
 
     return {
       type: 'time-pattern-alert',
       symbol,
-      digit: established.digit,
+      digit: best.digit,
       granularity: window.granularity,
-      timeLabel: slotLabel(
-        window.granularity,
-        established.timeSlot
-      ),
+      timeLabel: slotLabel(window.granularity, best.timeSlot),
       timeWindowSeconds: window.timeWindowSeconds,
-      predictionSamples: established.predictionSamples,
-      wins: established.wins,
-      losses: established.losses,
-      winRate: Number(
-        (
-          Number(established.wins || 0) /
-          total *
-          100
-        ).toFixed(2)
+
+      // Full historical evidence
+      historicalOccurrences: best.occurrences,
+      historicalTotalObservations: best.historicalTotal,
+      historicalRate: historicalRatePercent,
+      historicalLowerBound: historicalLowerPercent,
+      baselineRate: 10,
+      liftVsBaseline: Number(
+        (best.historicalShare / BASELINE_DIGIT_SHARE).toFixed(2)
       ),
+
+      // Optional live/outcome validation
+      validationSamples: best.validationTotal,
+      validationWins: best.validationWins,
+      validationLosses:
+        Math.max(0, best.validationTotal - best.validationWins),
+      validationWinRate: validationRatePercent,
+
+      // Keep legacy fields so existing frontend code does not break.
+      predictionSamples: best.predictionSamples || 0,
+      wins: best.wins || 0,
+      losses: best.losses || 0,
+      winRate: winRate(best),
+
       status: 'ESTABLISHED',
-      currentWinStreak: established.currentWinStreak,
-      bestWinStreak: established.bestWinStreak,
+      evidence: 'HISTORICAL_TICKS',
+      currentWinStreak: best.currentWinStreak || 0,
+      bestWinStreak: best.bestWinStreak || 0,
       observedAt: Number(epoch)
     };
   }
 
   return null;
 }
+
 export async function getTimePatternMemory({ symbol, limit = 20 }) {
   const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
   return TimePatternMemory.find({ symbol })
