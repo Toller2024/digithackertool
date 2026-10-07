@@ -115,35 +115,93 @@ export async function recordTimePatternOutcome({ symbol, predictedDigit, actualD
 
 export async function findTimePatternAlert({ symbol, epoch }) {
   if (!symbol || !Number.isFinite(Number(epoch))) return null;
+
   const slots = getTimeSlots(epoch);
   if (!slots) return null;
-  const candidates = await TimePatternMemory.find({
-    symbol, granularity: '10s', timeSlot: slots.tenSecondSlot,
-    predictionSamples: { $gte: MIN_ESTABLISHED_SAMPLES }
-  }).sort({ wins: -1, predictionSamples: -1 }).limit(10).lean();
-  const established = candidates.find((candidate) => {
-    const total = Number(candidate.wins || 0) + Number(candidate.losses || 0);
-    const rate = total > 0 ? candidate.wins / total : 0;
-    return candidate.predictionSamples >= MIN_ESTABLISHED_SAMPLES &&
-      candidate.wins >= MIN_ESTABLISHED_WINS && total > 0 && rate >= ESTABLISHED_WIN_RATE;
-  });
-  if (!established) return null;
-  const total = established.wins + established.losses;
-  return {
-    type: 'time-pattern-alert',
-    symbol, digit: established.digit,
-    timeLabel: slotLabel('10s', established.timeSlot),
-    timeWindowSeconds: 10,
-    predictionSamples: established.predictionSamples,
-    wins: established.wins, losses: established.losses,
-    winRate: Number((established.wins / total * 100).toFixed(2)),
-    status: 'ESTABLISHED',
-    currentWinStreak: established.currentWinStreak,
-    bestWinStreak: established.bestWinStreak,
-    observedAt: Number(epoch)
-  };
-}
 
+  /*
+   * Check both recurring time windows.
+   * Prefer the more precise 10-second pattern when it is
+   * genuinely established; otherwise allow an established
+   * 60-second pattern to trigger the alert.
+   */
+  const granularities = [
+    {
+      granularity: '10s',
+      timeSlot: slots.tenSecondSlot,
+      timeWindowSeconds: 10
+    },
+    {
+      granularity: '60s',
+      timeSlot: slots.minuteSlot,
+      timeWindowSeconds: 60
+    }
+  ];
+
+  for (const window of granularities) {
+    const candidates = await TimePatternMemory.find({
+      symbol,
+      granularity: window.granularity,
+      timeSlot: window.timeSlot,
+      predictionSamples: { $gte: MIN_ESTABLISHED_SAMPLES }
+    })
+      .sort({ wins: -1, predictionSamples: -1 })
+      .limit(10)
+      .lean();
+
+    const established = candidates.find((candidate) => {
+      const total =
+        Number(candidate.wins || 0) +
+        Number(candidate.losses || 0);
+
+      const rate =
+        total > 0
+          ? Number(candidate.wins || 0) / total
+          : 0;
+
+      return (
+        candidate.predictionSamples >= MIN_ESTABLISHED_SAMPLES &&
+        candidate.wins >= MIN_ESTABLISHED_WINS &&
+        total > 0 &&
+        rate >= ESTABLISHED_WIN_RATE
+      );
+    });
+
+    if (!established) continue;
+
+    const total =
+      Number(established.wins || 0) +
+      Number(established.losses || 0);
+
+    return {
+      type: 'time-pattern-alert',
+      symbol,
+      digit: established.digit,
+      granularity: window.granularity,
+      timeLabel: slotLabel(
+        window.granularity,
+        established.timeSlot
+      ),
+      timeWindowSeconds: window.timeWindowSeconds,
+      predictionSamples: established.predictionSamples,
+      wins: established.wins,
+      losses: established.losses,
+      winRate: Number(
+        (
+          Number(established.wins || 0) /
+          total *
+          100
+        ).toFixed(2)
+      ),
+      status: 'ESTABLISHED',
+      currentWinStreak: established.currentWinStreak,
+      bestWinStreak: established.bestWinStreak,
+      observedAt: Number(epoch)
+    };
+  }
+
+  return null;
+}
 export async function getTimePatternMemory({ symbol, limit = 20 }) {
   const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
   return TimePatternMemory.find({ symbol })
@@ -240,18 +298,23 @@ export async function rebuildTimePatternMemory({ symbols }) {
       result: { $in: ['WIN', 'LOSS'] },
       actualDigit: { $gte: 0, $lte: 9 },
       predictedDigit: { $gte: 0, $lte: 9 },
-      resolvedAt: { $ne: null }
+      predictionEpoch: { $gte: 0 }
     })
-      .select({ predictedDigit: 1, actualDigit: 1, resolvedAt: 1 })
+      .select({ predictedDigit: 1, actualDigit: 1, predictionEpoch: 1 })
       .sort({ resolvedAt: 1 })
       .lean();
 
     const outcomeBuckets = new Map();
 
     for (const prediction of predictions) {
-      const resolvedEpoch = Math.floor(new Date(prediction.resolvedAt).getTime() / 1000);
-      if (!Number.isFinite(resolvedEpoch)) continue;
-      const slots = getTimeSlots(resolvedEpoch);
+      /*
+       * Use the timestamp of the prediction itself.
+       * The outcome arrives on the next tick, so resolvedAt
+       * would shift the pattern into the following time slot.
+       */
+      const predictionEpoch = Number(prediction.predictionEpoch);
+      if (!Number.isFinite(predictionEpoch)) continue;
+      const slots = getTimeSlots(predictionEpoch);
       if (!slots) continue;
       const won = prediction.predictedDigit === prediction.actualDigit;
 
@@ -267,24 +330,24 @@ export async function rebuildTimePatternMemory({ symbols }) {
           losses: 0,
           currentWinStreak: 0,
           bestWinStreak: 0,
-          lastObservedEpoch: resolvedEpoch,
-          firstObservedEpoch: resolvedEpoch,
+          lastObservedEpoch: predictionEpoch,
+          firstObservedEpoch: predictionEpoch,
           lastWinEpoch: null,
           lastLossEpoch: null
         };
 
         item.predictionSamples += 1;
-        item.lastObservedEpoch = resolvedEpoch;
+        item.lastObservedEpoch = predictionEpoch;
 
         if (won) {
           item.wins += 1;
           item.currentWinStreak += 1;
           item.bestWinStreak = Math.max(item.bestWinStreak, item.currentWinStreak);
-          item.lastWinEpoch = resolvedEpoch;
+          item.lastWinEpoch = predictionEpoch;
         } else {
           item.losses += 1;
           item.currentWinStreak = 0;
-          item.lastLossEpoch = resolvedEpoch;
+          item.lastLossEpoch = predictionEpoch;
         }
 
         outcomeBuckets.set(key, item);
