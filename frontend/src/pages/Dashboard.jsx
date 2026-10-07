@@ -420,7 +420,7 @@ export default function Dashboard() {
               `DigiHackerTool — ${symbol}`,
               {
                 body:
-                  `Established time pattern: digit ${alertData.digit} around ${alertData.timeLabel} UTC — ${alertData.winRate}% historical WIN rate from ${alertData.predictionSamples} samples.`,
+                  `Established historical pattern: digit ${alertData.digit} around ${alertData.timeLabel} UTC — ${alertData.historicalRate ?? alertData.winRate}% historical frequency from ${alertData.historicalOccurrences ?? alertData.predictionSamples} matching ticks.`,
                 tag:
                   `time-pattern-${symbol}`
               }
@@ -556,10 +556,12 @@ export default function Dashboard() {
               DIGIT {timePatternAlert.digit}
             </div>
             <div style={styles.timePatternAlertDetails}>
-              Around {timePatternAlert.timeLabel} UTC · {timePatternAlert.winRate}% WIN rate · {timePatternAlert.predictionSamples} samples
+              Around {timePatternAlert.timeLabel} UTC · {timePatternAlert.historicalRate ?? timePatternAlert.winRate}% historical digit frequency · {timePatternAlert.historicalOccurrences ?? timePatternAlert.predictionSamples} matching ticks
             </div>
             <div style={styles.timePatternAlertEvidence}>
-              {timePatternAlert.wins} wins / {timePatternAlert.losses} losses · streak {timePatternAlert.currentWinStreak}
+              {timePatternAlert.historicalTotalObservations
+                ? `Baseline 10% · ${timePatternAlert.liftVsBaseline}× baseline · lower bound ${timePatternAlert.historicalLowerBound}%`
+                : `${timePatternAlert.wins} wins / ${timePatternAlert.losses} losses · streak ${timePatternAlert.currentWinStreak}`}
             </div>
           </div>
         )}
