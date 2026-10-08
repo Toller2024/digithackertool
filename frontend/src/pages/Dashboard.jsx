@@ -29,6 +29,12 @@ const SYMBOLS = [
 const REQUIRED_TICKS = 30;
 
 export default function Dashboard() {
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() =>
+    typeof window !== 'undefined' &&
+    'Notification' in window &&
+    Notification.permission === 'granted'
+  );
+
   const [marketData, setMarketData] = useState(() => {
     const initial = {};
 
@@ -49,6 +55,19 @@ export default function Dashboard() {
 
   const streams = useRef({});
   const mounted = useRef(false);
+
+  async function enableNotifications() {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      return;
+    }
+
+    try {
+      const permission = await Notification.requestPermission();
+      setNotificationsEnabled(permission === 'granted');
+    } catch (error) {
+      console.error('Notification permission request failed:', error);
+    }
+  }
 
   useEffect(() => {
     mounted.current = true;
@@ -304,6 +323,8 @@ export default function Dashboard() {
               ...previous[symbol],
 
               prediction,
+
+              timePatternAlert: prediction.timePattern || null,
 
               connected: true,
 
@@ -713,6 +734,28 @@ export default function Dashboard() {
         🧠 Predictions are generated from
         historical tick learning and live
         results.
+
+        <div style={styles.notificationRow}>
+          {typeof window !== 'undefined' && 'Notification' in window ? (
+            notificationsEnabled ? (
+              <span style={styles.notificationEnabled}>
+                🔔 Browser alerts enabled
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={enableNotifications}
+                style={styles.notificationButton}
+              >
+                🔔 Enable browser alerts
+              </button>
+            )
+          ) : (
+            <span style={styles.notificationUnavailable}>
+              Browser notifications are not supported here.
+            </span>
+          )}
+        </div>
       </div>
 
       <div style={styles.grid}>
@@ -957,6 +1000,35 @@ const styles = {
     textAlign: 'center',
 
     fontSize: '14px'
+  },
+
+  notificationRow: {
+    marginTop: '10px',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
+
+  notificationButton: {
+    border: '1px solid rgba(143,193,255,0.45)',
+    background: 'rgba(77,163,255,0.12)',
+    color: '#a9cfff',
+    borderRadius: '8px',
+    padding: '8px 12px',
+    cursor: 'pointer',
+    fontWeight: '700',
+    fontSize: '12px'
+  },
+
+  notificationEnabled: {
+    color: '#70e090',
+    fontSize: '12px',
+    fontWeight: '700'
+  },
+
+  notificationUnavailable: {
+    color: '#8f98a8',
+    fontSize: '12px'
   },
 
   grid: {
