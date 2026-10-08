@@ -5,7 +5,6 @@ import { getPipSize, extractLastDigitFromQuote } from '../services/digitUtils.js
 
 import {
   collectHistoricalTicks,
-  collectAllHistoricalTicks,
   SYMBOLS,
   TARGET_TICKS_PER_SYMBOL
 } from '../services/historicalTicks.js';
@@ -18,9 +17,21 @@ import {
 const router = express.Router();
 
 /*
+ * Background long-term historical collection state.
+ */
+const historicalCollectionState = {
+  running: false,
+  startedAt: null,
+  finishedAt: null,
+  error: null,
+  targetPerSymbol: TARGET_TICKS_PER_SYMBOL,
+  symbols: SYMBOLS,
+  currentSymbol: null,
+  results: []
+};
+
+/*
  * Background time-pattern rebuild state.
- * The rebuild is intentionally not tied to an HTTP request,
- * so Render does not have to keep a browser connection open.
  */
 const timePatternRebuildState = {
   running: false,
@@ -35,11 +46,8 @@ const timePatternRebuildState = {
 /*
  * GET /historical/status
  *
- * Shows the ACTUAL MongoDB historical-memory
- * count for every supported volatility.
- *
- * This is read-only. It does not collect or
- * modify any ticks.
+ * Shows actual MongoDB counts and the configured
+ * long-term target.
  */
 router.get('/status', async (req, res) => {
   try {
@@ -84,8 +92,10 @@ router.get('/status', async (req, res) => {
               percentage:
                 count > 0
                   ? Number(
-                      (((found?.count || 0) / count) * 100)
-                        .toFixed(2)
+                      (
+                        ((found?.count || 0) / count) *
+                        100
+                      ).toFixed(2)
                     )
                   : 0
             };
@@ -126,9 +136,13 @@ router.get('/status', async (req, res) => {
         totalTarget - totalCount,
         0
       ),
-      allSymbolsComplete: symbolStats.every(
-        (item) => item.complete
-      ),
+      allSymbolsComplete:
+        symbolStats.every(
+          (item) => item.complete
+        ),
+      collection: {
+        ...historicalCollectionState
+      },
       symbols: symbolStats
     });
   } catch (error) {
@@ -147,15 +161,220 @@ router.get('/status', async (req, res) => {
 });
 
 /*
+ * POST /historical/collect-all
+ *
+ * Starts the long-term backfill in the background.
+ *
+ * Confirmation is required so a refresh cannot accidentally
+ * launch another million-tick collection.
+ */
+const startHistoricalCollection = async (req, res) => {
+  if (
+    req.query.confirm !== 'COLLECT_1M' &&
+    req.body?.confirm !== 'COLLECT_1M'
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: 'Confirmation required',
+      required:
+        'confirm=COLLECT_1M or JSON body {"confirm":"COLLECT_1M"}'
+    });
+  }
+
+  if (historicalCollectionState.running) {
+    return res.status(409).json({
+      success: false,
+      status: 'RUNNING',
+      message:
+        'Million-tick historical collection is already running.',
+      collection:
+        historicalCollectionState
+    });
+  }
+
+  historicalCollectionState.running = true;
+  historicalCollectionState.startedAt =
+    new Date().toISOString();
+  historicalCollectionState.finishedAt = null;
+  historicalCollectionState.error = null;
+  historicalCollectionState.targetPerSymbol =
+    TARGET_TICKS_PER_SYMBOL;
+  historicalCollectionState.symbols = SYMBOLS;
+  historicalCollectionState.currentSymbol = null;
+  historicalCollectionState.results = [];
+
+  setImmediate(async () => {
+    try {
+      for (const symbol of SYMBOLS) {
+        historicalCollectionState.currentSymbol =
+          symbol;
+
+        const result =
+          await collectHistoricalTicks(
+            symbol,
+            TARGET_TICKS_PER_SYMBOL
+          );
+
+        historicalCollectionState.results.push(
+          result
+        );
+      }
+
+      historicalCollectionState.currentSymbol =
+        null;
+      historicalCollectionState.running = false;
+      historicalCollectionState.finishedAt =
+        new Date().toISOString();
+
+      console.log(
+        '✅ LONG-TERM HISTORICAL COLLECTION COMPLETE'
+      );
+    } catch (error) {
+      historicalCollectionState.currentSymbol =
+        null;
+      historicalCollectionState.running = false;
+      historicalCollectionState.finishedAt =
+        new Date().toISOString();
+      historicalCollectionState.error =
+        error?.message || String(error);
+
+      console.error(
+        '❌ LONG-TERM HISTORICAL COLLECTION ERROR:',
+        error?.message || String(error)
+      );
+    }
+  });
+
+  return res.status(202).json({
+    success: true,
+    status: 'STARTED',
+    message:
+      'Long-term historical collection started in the background.',
+    targetPerSymbol:
+      TARGET_TICKS_PER_SYMBOL,
+    totalTarget:
+      TARGET_TICKS_PER_SYMBOL *
+      SYMBOLS.length,
+    symbols: SYMBOLS,
+    monitor:
+      '/historical/status'
+  });
+};
+
+router.post(
+  '/collect-all',
+  startHistoricalCollection
+);
+
+/*
+ * POST /historical/collect/:symbol
+ *
+ * Starts one-symbol long-term historical backfill.
+ */
+router.post(
+  '/collect/:symbol',
+  async (req, res) => {
+    try {
+      const symbol =
+        req.params.symbol.toUpperCase();
+
+      if (!SYMBOLS.includes(symbol)) {
+        return res.status(400).json({
+          success: false,
+          error:
+            `Unsupported symbol: ${symbol}`,
+          allowedSymbols: SYMBOLS
+        });
+      }
+
+      if (
+        req.query.confirm !== 'COLLECT_1M' &&
+        req.body?.confirm !== 'COLLECT_1M'
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: 'Confirmation required',
+          required: 'confirm=COLLECT_1M'
+        });
+      }
+
+      if (historicalCollectionState.running) {
+        return res.status(409).json({
+          success: false,
+          status: 'RUNNING',
+          message:
+            'A historical collection is already running.'
+        });
+      }
+
+      historicalCollectionState.running = true;
+      historicalCollectionState.startedAt =
+        new Date().toISOString();
+      historicalCollectionState.finishedAt = null;
+      historicalCollectionState.error = null;
+      historicalCollectionState.targetPerSymbol =
+        TARGET_TICKS_PER_SYMBOL;
+      historicalCollectionState.symbols = [symbol];
+      historicalCollectionState.currentSymbol =
+        symbol;
+      historicalCollectionState.results = [];
+
+      setImmediate(async () => {
+        try {
+          const result =
+            await collectHistoricalTicks(
+              symbol,
+              TARGET_TICKS_PER_SYMBOL
+            );
+
+          historicalCollectionState.results = [
+            result
+          ];
+          historicalCollectionState.currentSymbol =
+            null;
+          historicalCollectionState.running = false;
+          historicalCollectionState.finishedAt =
+            new Date().toISOString();
+        } catch (error) {
+          historicalCollectionState.currentSymbol =
+            null;
+          historicalCollectionState.running = false;
+          historicalCollectionState.finishedAt =
+            new Date().toISOString();
+          historicalCollectionState.error =
+            error?.message || String(error);
+        }
+      });
+
+      return res.status(202).json({
+        success: true,
+        status: 'STARTED',
+        symbol,
+        targetPerSymbol:
+          TARGET_TICKS_PER_SYMBOL,
+        monitor:
+          '/historical/status'
+      });
+    } catch (error) {
+      console.error(
+        '❌ HISTORICAL ROUTE ERROR:',
+        error?.message || String(error)
+      );
+
+      return res.status(500).json({
+        success: false,
+        error:
+          error?.message ||
+          'Historical collection failed'
+      });
+    }
+  }
+);
+
+/*
  * POST /historical/repair-digits
  *
  * One-time repair for existing Tick documents.
- *
- * Required confirmation:
- * /historical/repair-digits?confirm=REPAIR_DIGITS
- *
- * This updates only the derived digit field.
- * Quotes, epochs and timestamps are not changed.
  */
 const repairDigits = async (req, res) => {
   if (req.query.confirm !== 'REPAIR_DIGITS') {
@@ -172,6 +391,7 @@ const repairDigits = async (req, res) => {
 
     for (const symbol of SYMBOLS) {
       const pipSize = await getPipSize(symbol);
+
       const cursor = Tick.find({ symbol })
         .select({ _id: 1, quote: 1 })
         .lean()
@@ -181,10 +401,11 @@ const repairDigits = async (req, res) => {
       let updated = 0;
 
       for await (const tick of cursor) {
-        const digit = extractLastDigitFromQuote(
-          tick.quote,
-          pipSize
-        );
+        const digit =
+          extractLastDigitFromQuote(
+            tick.quote,
+            pipSize
+          );
 
         if (
           !Number.isInteger(digit) ||
@@ -202,23 +423,28 @@ const repairDigits = async (req, res) => {
         });
 
         if (operations.length >= 500) {
-          const result = await Tick.bulkWrite(
-            operations,
-            { ordered: false }
-          );
+          const result =
+            await Tick.bulkWrite(
+              operations,
+              { ordered: false }
+            );
 
-          updated += result.modifiedCount || 0;
+          updated +=
+            result.modifiedCount || 0;
+
           operations = [];
         }
       }
 
       if (operations.length) {
-        const result = await Tick.bulkWrite(
-          operations,
-          { ordered: false }
-        );
+        const result =
+          await Tick.bulkWrite(
+            operations,
+            { ordered: false }
+          );
 
-        updated += result.modifiedCount || 0;
+        updated +=
+          result.modifiedCount || 0;
       }
 
       totalUpdated += updated;
@@ -256,16 +482,20 @@ const repairDigits = async (req, res) => {
   }
 };
 
-router.get('/repair-digits', repairDigits);
-router.post('/repair-digits', repairDigits);
+router.get(
+  '/repair-digits',
+  repairDigits
+);
+
+router.post(
+  '/repair-digits',
+  repairDigits
+);
 
 /*
  * POST /historical/time-pattern/rebuild
  *
- * Builds recurring time-of-day digit memory from
- * the existing MongoDB Tick collection.
- *
- * It does not change Tick documents.
+ * Builds recurring time-of-day digit memory from existing ticks.
  */
 const rebuildTimePatterns = async (req, res) => {
   if (
@@ -275,14 +505,16 @@ const rebuildTimePatterns = async (req, res) => {
     return res.status(400).json({
       success: false,
       error: 'Confirmation required',
-      required: 'confirm=BUILD_TIME_PATTERNS'
+      required:
+        'confirm=BUILD_TIME_PATTERNS'
     });
   }
 
   if (timePatternRebuildState.running) {
     return res.status(409).json({
       success: false,
-      message: 'Time-pattern rebuild is already running.',
+      message:
+        'Time-pattern rebuild is already running.',
       status: 'RUNNING',
       ...timePatternRebuildState
     });
@@ -303,41 +535,36 @@ const rebuildTimePatterns = async (req, res) => {
   if (!symbols.length) {
     return res.status(400).json({
       success: false,
-      error: 'No supported symbols supplied.',
+      error:
+        'No supported symbols supplied.',
       allowedSymbols: SYMBOLS
     });
   }
 
   timePatternRebuildState.running = true;
-  timePatternRebuildState.startedAt = new Date().toISOString();
+  timePatternRebuildState.startedAt =
+    new Date().toISOString();
   timePatternRebuildState.finishedAt = null;
   timePatternRebuildState.error = null;
   timePatternRebuildState.results = [];
   timePatternRebuildState.symbols = symbols;
   timePatternRebuildState.currentSymbol = null;
 
-  /*
-   * Start the expensive operation without awaiting it.
-   * The HTTP response returns immediately.
-   */
   setImmediate(async () => {
     try {
       for (const symbol of symbols) {
-        timePatternRebuildState.currentSymbol = symbol;
-        console.log(
-          `⏰ TIME-PATTERN REBUILD START ${symbol}`
-        );
+        timePatternRebuildState.currentSymbol =
+          symbol;
 
-        const result = await rebuildTimePatternMemory({
-          symbols: [symbol]
-        });
+        const result =
+          await rebuildTimePatternMemory({
+            symbols: [symbol]
+          });
 
         timePatternRebuildState.results.push(
-          ...(Array.isArray(result) ? result : [result])
-        );
-
-        console.log(
-          `⏰ TIME-PATTERN REBUILD COMPLETE ${symbol}`
+          ...(Array.isArray(result)
+            ? result
+            : [result])
         );
       }
 
@@ -345,10 +572,6 @@ const rebuildTimePatterns = async (req, res) => {
       timePatternRebuildState.running = false;
       timePatternRebuildState.finishedAt =
         new Date().toISOString();
-
-      console.log(
-        '✅ TIME-PATTERN FULL REBUILD COMPLETE'
-      );
     } catch (error) {
       timePatternRebuildState.currentSymbol = null;
       timePatternRebuildState.running = false;
@@ -356,11 +579,6 @@ const rebuildTimePatterns = async (req, res) => {
         new Date().toISOString();
       timePatternRebuildState.error =
         error?.message || String(error);
-
-      console.error(
-        '❌ TIME-PATTERN REBUILD ERROR:',
-        error?.message || String(error)
-      );
     }
   });
 
@@ -369,7 +587,8 @@ const rebuildTimePatterns = async (req, res) => {
     status: 'STARTED',
     message:
       'Time-pattern rebuild started in the background. Use /historical/time-pattern/rebuild-status to monitor progress.',
-    startedAt: timePatternRebuildState.startedAt,
+    startedAt:
+      timePatternRebuildState.startedAt,
     symbols
   });
 };
@@ -383,6 +602,7 @@ router.get(
     });
   }
 );
+
 router.get(
   '/time-pattern/rebuild',
   rebuildTimePatterns
@@ -393,12 +613,6 @@ router.post(
   rebuildTimePatterns
 );
 
-/*
- * GET /historical/time-pattern/:symbol
- *
- * Diagnostic view of the learned time-pattern
- * memory for one volatility.
- */
 router.get(
   '/time-pattern/:symbol',
   async (req, res) => {
@@ -439,121 +653,6 @@ router.get(
         error:
           error?.message ||
           'Unable to read time-pattern memory'
-      });
-    }
-  }
-);
-
-/*
- * POST /historical/collect/:symbol
- *
- * Collect historical ticks for one symbol.
- *
- * Example:
- * /historical/collect/R_10
- */
-router.post(
-  '/collect/:symbol',
-  async (req, res) => {
-    try {
-      const symbol =
-        req.params.symbol.toUpperCase();
-
-      if (!SYMBOLS.includes(symbol)) {
-        return res.status(400).json({
-          success: false,
-          error:
-            `Unsupported symbol: ${symbol}`,
-          allowedSymbols: SYMBOLS
-        });
-      }
-
-      console.log('');
-      console.log(
-        '=========================================='
-      );
-      console.log(
-        '📚 MANUAL HISTORICAL COLLECTION'
-      );
-      console.log(
-        '=========================================='
-      );
-      console.log(
-        'Symbol:',
-        symbol
-      );
-      console.log('');
-
-      const result =
-        await collectHistoricalTicks(
-          symbol
-        );
-
-      return res.json({
-        success: true,
-        result
-      });
-    } catch (error) {
-      console.error(
-        '❌ HISTORICAL ROUTE ERROR:',
-        error?.message ||
-          String(error)
-      );
-
-      return res.status(500).json({
-        success: false,
-        error:
-          error?.message ||
-          'Historical collection failed'
-      });
-    }
-  }
-);
-
-/*
- * POST /historical/collect-all
- *
- * Collect historical memory for all five
- * supported symbols.
- *
- * This is intentionally POST because it
- * starts a database operation.
- */
-router.post(
-  '/collect-all',
-  async (req, res) => {
-    try {
-      console.log('');
-      console.log(
-        '=========================================='
-      );
-      console.log(
-        '🚀 MANUAL FULL HISTORICAL COLLECTION'
-      );
-      console.log(
-        '=========================================='
-      );
-      console.log('');
-
-      const results =
-        await collectAllHistoricalTicks();
-
-      return res.json({
-        success: true,
-        results
-      });
-    } catch (error) {
-      console.error(
-        '❌ FULL HISTORICAL COLLECTION ERROR:',
-        error?.message ||
-          String(error)
-      );
-
-      return res.status(500).json({
-        success: false,
-        error:
-          error?.message ||
-          'Full historical collection failed'
       });
     }
   }
