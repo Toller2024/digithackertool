@@ -5,7 +5,38 @@ import { getPipSize, extractLastDigitFromQuote } from './digitUtils.js';
 const DERIV_WS_URL =
   'wss://api.derivws.com/trading/v1/options/ws/public';
 
-const TARGET_TICKS_PER_SYMBOL = 10000;
+/*
+ * Long-term historical memory target.
+ *
+ * Render environment variable can override this:
+ * HISTORICAL_TARGET_PER_SYMBOL=1000000
+ */
+const TARGET_TICKS_PER_SYMBOL = Math.max(
+  10000,
+  Number.parseInt(
+    process.env.HISTORICAL_TARGET_PER_SYMBOL || '1000000',
+    10
+  ) || 1000000
+);
+
+const REQUEST_BATCH_SIZE = Math.min(
+  Math.max(
+    Number.parseInt(
+      process.env.HISTORICAL_REQUEST_BATCH_SIZE || '10000',
+      10
+    ) || 10000,
+    100
+  ),
+  10000
+);
+
+const REQUEST_DELAY_MS = Math.max(
+  0,
+  Number.parseInt(
+    process.env.HISTORICAL_REQUEST_DELAY_MS || '1000',
+    10
+  ) || 1000
+);
 
 const SYMBOLS = [
   'R_10',
@@ -15,12 +46,19 @@ const SYMBOLS = [
   'R_100'
 ];
 
-/* Precision-aware digit extraction is provided by digitUtils.js. */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /*
- * Request historical ticks from Deriv.
+ * Request one historical page from Deriv.
+ *
+ * The important part for million-tick collection is "end".
+ * After the first page, we request data older than the oldest
+ * tick already stored. This prevents repeatedly downloading
+ * the same latest 10,000 ticks.
  */
-function requestHistory(symbol, count) {
+function requestHistory(symbol, count, endEpoch = 'latest') {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(DERIV_WS_URL);
 
@@ -53,32 +91,16 @@ function requestHistory(symbol, count) {
       const request = {
         ticks_history: symbol,
         count,
-        end: 'latest',
+        end: endEpoch,
         style: 'ticks',
         req_id: 1
       };
 
-      console.log('');
       console.log(
-        '=========================================='
+        `📚 HISTORY REQUEST ${symbol}: count=${count}, end=${endEpoch}`
       );
-      console.log(
-        '📚 DERIV HISTORICAL REQUEST'
-      );
-      console.log(
-        '=========================================='
-      );
-      console.log('Symbol:', symbol);
-      console.log('Requested:', count);
-      console.log(
-        'Request:',
-        JSON.stringify(request)
-      );
-      console.log('');
 
-      ws.send(
-        JSON.stringify(request)
-      );
+      ws.send(JSON.stringify(request));
     });
 
     ws.on('message', (rawData) => {
@@ -115,7 +137,6 @@ function requestHistory(symbol, count) {
 
       const prices = response.history?.prices || [];
       const times = response.history?.times || [];
-
       const pipSize = Number(response.pip_size);
 
       finish(resolve, {
@@ -130,11 +151,7 @@ function requestHistory(symbol, count) {
 
     ws.on('error', (error) => {
       clearTimeout(timeout);
-
-      finish(
-        reject,
-        error
-      );
+      finish(reject, error);
     });
 
     ws.on('close', () => {
@@ -153,67 +170,127 @@ function requestHistory(symbol, count) {
 }
 
 /*
- * Save historical ticks into MongoDB.
+ * Save a page without loading millions of documents into memory.
+ * MongoDB's unique {symbol, epoch} index safely ignores duplicate
+ * pages when the historical boundary overlaps.
  */
 async function saveTicks(ticks) {
   if (!ticks.length) {
     return 0;
   }
 
-  let inserted = 0;
-
   try {
-    const result =
-      await Tick.insertMany(
-        ticks,
-        {
-          ordered: false
-        }
-      );
+    const result = await Tick.insertMany(
+      ticks,
+      {
+        ordered: false
+      }
+    );
 
-    inserted = result.length;
+    return result.length;
   } catch (error) {
-    /*
-     * Duplicate ticks can happen because
-     * symbol + epoch is unique.
-     */
     if (
       error?.writeErrors &&
       Array.isArray(error.writeErrors)
     ) {
-      inserted =
-        ticks.length -
-        error.writeErrors.length;
-    } else if (
-      error?.code === 11000
-    ) {
-      /*
-       * MongoDB duplicate-key error.
-       *
-       * The existing records are still valid.
-       */
-      console.log(
-        'ℹ️ Duplicate historical ticks detected. Skipping duplicates.'
+      return Math.max(
+        ticks.length - error.writeErrors.length,
+        0
       );
-    } else {
-      throw error;
     }
+
+    /*
+     * Some Mongoose/MongoDB versions expose duplicate errors
+     * differently. A duplicate-only page is not fatal.
+     */
+    if (
+      error?.code === 11000 ||
+      error?.writeErrors?.some(
+        (item) => item?.code === 11000
+      )
+    ) {
+      console.log(
+        'ℹ️ Duplicate historical ticks detected. Continuing.'
+      );
+
+      return 0;
+    }
+
+    throw error;
+  }
+}
+
+async function countSymbolTicks(symbol) {
+  return Tick.countDocuments({ symbol });
+}
+
+async function getOldestEpoch(symbol) {
+  const oldest = await Tick.findOne({ symbol })
+    .sort({ epoch: 1 })
+    .select({ epoch: 1 })
+    .lean();
+
+  return Number.isFinite(Number(oldest?.epoch))
+    ? Number(oldest.epoch)
+    : null;
+}
+
+function buildTicks(symbol, history, pipSize) {
+  const ticks = [];
+  const seenEpochs = new Set();
+
+  const length = Math.min(
+    history.prices.length,
+    history.times.length
+  );
+
+  for (let i = 0; i < length; i += 1) {
+    const quote = Number(history.prices[i]);
+    const epoch = Number(history.times[i]);
+
+    if (
+      !Number.isFinite(quote) ||
+      !Number.isFinite(epoch) ||
+      seenEpochs.has(epoch)
+    ) {
+      continue;
+    }
+
+    const digit = extractLastDigitFromQuote(
+      quote,
+      pipSize
+    );
+
+    if (
+      !Number.isInteger(digit) ||
+      digit < 0 ||
+      digit > 9
+    ) {
+      continue;
+    }
+
+    seenEpochs.add(epoch);
+
+    ticks.push({
+      symbol,
+      quote,
+      digit,
+      epoch,
+      timestamp: new Date(epoch * 1000)
+    });
   }
 
-  return inserted;
+  return ticks;
 }
 
 /*
- * Count stored ticks for a symbol.
- */
-async function countSymbolTicks(symbol) {
-  return Tick.countDocuments({
-    symbol
-  });
-}
-
-/*
- * Collect historical ticks for one symbol.
+ * Collect historical ticks for one symbol until the requested
+ * target is reached or Deriv has no older page available.
+ *
+ * This function is deliberately incremental:
+ * - one 10k-page at a time
+ * - one MongoDB write at a time
+ * - no million-tick array in RAM
  */
 export async function collectHistoricalTicks(
   symbol,
@@ -225,160 +302,188 @@ export async function collectHistoricalTicks(
     );
   }
 
-  let existing =
-    await countSymbolTicks(symbol);
+  const requestedTarget = Math.max(
+    1,
+    Number.parseInt(target, 10) || TARGET_TICKS_PER_SYMBOL
+  );
+
+  let existing = await countSymbolTicks(symbol);
 
   console.log('');
-  console.log(
-    '=========================================='
-  );
-  console.log(
-    '📊 HISTORICAL MEMORY STATUS'
-  );
-  console.log(
-    '=========================================='
-  );
+  console.log('==========================================');
+  console.log('📊 LONG-TERM HISTORICAL MEMORY');
+  console.log('==========================================');
   console.log('Symbol:', symbol);
-  console.log(
-    'Existing ticks:',
-    existing
-  );
-  console.log(
-    'Target ticks:',
-    target
-  );
+  console.log('Existing ticks:', existing);
+  console.log('Target ticks:', requestedTarget);
+  console.log('Page size:', REQUEST_BATCH_SIZE);
   console.log('');
 
-  if (existing >= target) {
-    console.log(
-      `✅ ${symbol} already has ${existing} ticks`
-    );
-
+  if (existing >= requestedTarget) {
     return {
       symbol,
       existing,
       added: 0,
       total: existing,
-      complete: true
+      target: requestedTarget,
+      complete: true,
+      exhausted: false
     };
   }
 
-  const missing =
-    target - existing;
+  let addedTotal = 0;
+  let pages = 0;
+  let endEpoch = await getOldestEpoch(symbol);
 
   /*
-   * Request slightly more than the missing
-   * amount to account for duplicates.
-   *
-   * Deriv supports up to 10,000 ticks per
-   * historical request.
+   * If we already have history, go backwards from the oldest
+   * stored tick. If there is no history, start at latest.
    */
-  const requestCount =
-    Math.min(
-      missing + 100,
-      10000
-    );
-
-  const history =
-    await requestHistory(
-      symbol,
-      requestCount
-    );
-
-  const pipSize =
-    history.pipSize ??
-    await getPipSize(symbol);
-
-  const ticks = [];
-
-  for (
-    let i = 0;
-    i < history.prices.length;
-    i++
-  ) {
-    const quote =
-      Number(history.prices[i]);
-
-    const epoch =
-      Number(history.times[i]);
-
-    if (
-      !Number.isFinite(quote) ||
-      !Number.isFinite(epoch)
-    ) {
-      continue;
-    }
-
-    const digit =
-      extractLastDigitFromQuote(
-        quote,
-        pipSize
-      );
-
-    if (
-      !Number.isInteger(digit) ||
-      digit < 0 ||
-      digit > 9
-    ) {
-      continue;
-    }
-
-    ticks.push({
-      symbol,
-      quote,
-      digit,
-      epoch,
-      timestamp:
-        new Date(epoch * 1000)
-    });
+  if (endEpoch !== null) {
+    endEpoch = Math.floor(endEpoch) - 1;
+  } else {
+    endEpoch = 'latest';
   }
 
-  console.log(
-    `📥 Received ${ticks.length} historical ticks for ${symbol} using pip_size=${pipSize}`
-  );
+  const pipSize = await getPipSize(symbol);
 
-  const added =
-    await saveTicks(ticks);
+  let exhausted = false;
+  let previousOldestReturned = null;
 
-  existing =
-    await countSymbolTicks(symbol);
+  while (existing < requestedTarget) {
+    const missing = requestedTarget - existing;
+
+    /*
+     * Never ask Deriv for more than its supported historical
+     * request size.
+     */
+    const requestCount = Math.min(
+      missing,
+      REQUEST_BATCH_SIZE
+    );
+
+    const history = await requestHistory(
+      symbol,
+      requestCount,
+      endEpoch
+    );
+
+    pages += 1;
+
+    const pageTicks = buildTicks(
+      symbol,
+      history,
+      history.pipSize ?? pipSize
+    );
+
+    if (!pageTicks.length) {
+      console.log(
+        `⚠️ ${symbol}: Deriv returned no usable historical ticks. Stopping this backfill.`
+      );
+      exhausted = true;
+      break;
+    }
+
+    /*
+     * Sort oldest -> newest so the next request can safely
+     * continue from the oldest returned epoch.
+     */
+    pageTicks.sort((a, b) => a.epoch - b.epoch);
+
+    const oldestReturned = pageTicks[0].epoch;
+    const newestReturned =
+      pageTicks[pageTicks.length - 1].epoch;
+
+    if (
+      previousOldestReturned !== null &&
+      oldestReturned >= previousOldestReturned
+    ) {
+      console.log(
+        `⚠️ ${symbol}: historical cursor did not move backwards. Stopping to prevent an infinite duplicate loop.`
+      );
+      exhausted = true;
+      break;
+    }
+
+    previousOldestReturned = oldestReturned;
+
+    const before = existing;
+    const inserted = await saveTicks(pageTicks);
+
+    addedTotal += inserted;
+    existing = await countSymbolTicks(symbol);
+
+    console.log(
+      `📥 ${symbol}: page=${pages}, received=${pageTicks.length}, inserted=${inserted}, total=${existing}/${requestedTarget}, range=${oldestReturned}→${newestReturned}`
+    );
+
+    if (existing >= requestedTarget) {
+      break;
+    }
+
+    /*
+     * Move strictly backwards. Using oldest-1 prevents the
+     * previous oldest tick from appearing again.
+     */
+    endEpoch = Math.floor(oldestReturned) - 1;
+
+    if (
+      !Number.isFinite(endEpoch) ||
+      endEpoch <= 0
+    ) {
+      exhausted = true;
+      break;
+    }
+
+    /*
+     * If MongoDB did not gain anything and Deriv returned a
+     * page that is older than before, we still continue.
+     * This handles overlapping historical records caused by
+     * gaps/duplicates without keeping a huge in-memory set.
+     */
+    if (existing === before) {
+      console.log(
+        `ℹ️ ${symbol}: no new MongoDB documents on this page; continuing further backwards.`
+      );
+    }
+
+    if (REQUEST_DELAY_MS > 0) {
+      await sleep(REQUEST_DELAY_MS);
+    }
+  }
+
+  const complete = existing >= requestedTarget;
 
   console.log('');
-  console.log(
-    '=========================================='
-  );
-  console.log(
-    '💾 HISTORICAL DATA SAVED'
-  );
-  console.log(
-    '=========================================='
-  );
+  console.log('==========================================');
+  console.log('💾 HISTORICAL BACKFILL RESULT');
+  console.log('==========================================');
   console.log('Symbol:', symbol);
-  console.log(
-    'Added:',
-    added
-  );
-  console.log(
-    'Total:',
-    existing
-  );
-  console.log(
-    'Target:',
-    target
-  );
+  console.log('Pages:', pages);
+  console.log('Added:', addedTotal);
+  console.log('Total:', existing);
+  console.log('Target:', requestedTarget);
+  console.log('Complete:', complete);
+  console.log('Exhausted:', exhausted);
   console.log('');
 
   return {
     symbol,
-    existing: existing - added,
-    added,
+    existing: existing - addedTotal,
+    added: addedTotal,
     total: existing,
-    complete: existing >= target
+    target: requestedTarget,
+    pages,
+    complete,
+    exhausted
   };
 }
 
 /*
- * Collect historical data for all five symbols.
+ * Collect all five volatility histories sequentially.
+ *
+ * Sequential collection is intentional: it protects the Render
+ * instance and MongoDB from five simultaneous 10k-page streams.
  */
 export async function collectAllHistoricalTicks(
   target = TARGET_TICKS_PER_SYMBOL
@@ -386,20 +491,16 @@ export async function collectAllHistoricalTicks(
   const results = [];
 
   console.log('');
+  console.log('==========================================');
+  console.log('🚀 STARTING MILLION-TICK HISTORICAL MEMORY');
+  console.log('==========================================');
   console.log(
-    '=========================================='
+    `Target: ${target.toLocaleString()} ticks per symbol`
   );
   console.log(
-    '🚀 STARTING HISTORICAL MEMORY COLLECTION'
-  );
-  console.log(
-    '=========================================='
-  );
-  console.log(
-    `Target: ${target} ticks per symbol`
-  );
-  console.log(
-    `Total target: ${target * SYMBOLS.length} ticks`
+    `Total target: ${(
+      target * SYMBOLS.length
+    ).toLocaleString()} ticks`
   );
   console.log('');
 
@@ -424,8 +525,7 @@ export async function collectAllHistoricalTicks(
         '=========================================='
       );
       console.error(
-        error?.message ||
-          String(error)
+        error?.message || String(error)
       );
       console.error('');
 
@@ -434,6 +534,7 @@ export async function collectAllHistoricalTicks(
         total: 0,
         added: 0,
         complete: false,
+        exhausted: false,
         error:
           error?.message ||
           String(error)
@@ -441,45 +542,13 @@ export async function collectAllHistoricalTicks(
     }
   }
 
-  console.log('');
-  console.log(
-    '=========================================='
-  );
-  console.log(
-    '📚 HISTORICAL COLLECTION SUMMARY'
-  );
-  console.log(
-    '=========================================='
-  );
-
-  for (const result of results) {
-    if (result.error) {
-      console.log(
-        `${result.symbol} → ERROR`
-      );
-    } else {
-      console.log(
-        `${result.symbol} → ${result.total} ticks`
-      );
-    }
-  }
-
-  const completed =
-    results.filter(
-      result => result.complete
-    ).length;
-
-  console.log('');
-  console.log(
-    `✅ Completed: ${completed}/${SYMBOLS.length}`
-  );
-  console.log('');
-
   return results;
 }
 
 export {
   SYMBOLS,
   TARGET_TICKS_PER_SYMBOL,
+  REQUEST_BATCH_SIZE,
+  REQUEST_DELAY_MS,
   extractLastDigitFromQuote
 };
