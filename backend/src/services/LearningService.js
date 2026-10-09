@@ -2,8 +2,7 @@ import Prediction from '../models/Prediction.js';
 import { predictNextDigit } from './PredictionEngine.js';
 import {
   recordTimePatternTick,
-  recordTimePatternOutcome,
-  findTimePatternAlert
+  recordTimePatternOutcome
 } from './TimePatternMemoryService.js';
 import {
   recordDayTimeTick,
@@ -100,8 +99,9 @@ export function processTickForLearning({
        * ==========================================
        */
 
-      const dayTimeAlert = await findEstablishedDayTimePattern({ symbol, epoch });
-      const timePatternAlert = dayTimeAlert || await findTimePatternAlert({ symbol, epoch });
+      // Only emit alerts that pass the weekday/time historical holdout test.
+      // Legacy minute/10-second patterns are still recorded, but cannot trigger an alert.
+      const timePatternAlert = await findEstablishedDayTimePattern({ symbol, epoch });
 
       await recordDayTimeTick({ symbol, digit, epoch });
       await recordTimePatternTick({
@@ -424,7 +424,6 @@ export function processTickForLearning({
             prediction.transitionSamples,
 
           timePattern:
-            prediction.timePattern ||
             timePatternAlert ||
             null,
 
