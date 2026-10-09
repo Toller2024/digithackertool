@@ -648,7 +648,15 @@ export default function Dashboard() {
           {(prediction.patternAnalysis || []).map((item) => (
             <div key={item.length} style={styles.patternAnalysisRow}>
               <span>{item.length}-digit context: {Array.isArray(item.pattern) ? item.pattern.join(' → ') : '—'}</span>
-              <strong>{item.samples} samples · {item.strongestDigit == null ? 'no match' : `top ${item.strongestDigit} (${item.strongestProbability}%)`}</strong>
+              <strong>
+                {item.samples} historical matches · {item.strongestDigit == null ? 'no match' : `top ${item.strongestDigit} (${item.strongestProbability}%)`}
+                {' · outcomes '}
+                {prediction.learning?.patternPerformanceByLength?.[String(item.length)]?.wins ?? 0}W/
+                {prediction.learning?.patternPerformanceByLength?.[String(item.length)]?.losses ?? 0}L
+                {prediction.learning?.patternPerformanceByLength?.[String(item.length)]?.winRate != null
+                  ? ` · smoothed win rate ${prediction.learning.patternPerformanceByLength[String(item.length)].winRate}%`
+                  : ''}
+              </strong>
             </div>
           ))}
         </div>
