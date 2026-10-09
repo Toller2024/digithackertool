@@ -1,6 +1,7 @@
 import express from 'express';
 
 import Tick from '../models/Tick.js';
+import Prediction from '../models/Prediction.js';
 import { getPipSize, extractLastDigitFromQuote } from '../services/digitUtils.js';
 
 import {
@@ -33,6 +34,62 @@ const historicalCollectionState = {
   currentSymbol: null,
   results: []
 };
+
+/*
+ * Background multi-scale prediction-context migration state.
+ */
+const predictionPatternRebuildState = {
+  running: false, startedAt: null, finishedAt: null, error: null, results: [], currentSymbol: null
+};
+
+async function rebuildPredictionPatternContexts() {
+  const results = [];
+  for (const symbol of SYMBOLS) {
+    let nextTick;
+    const tickCursor = Tick.find({ symbol, digit: { $gte: 0, $lte: 9 } })
+      .select({ digit: 1, epoch: 1 }).sort({ epoch: 1 }).lean().cursor();
+    nextTick = await tickCursor.next();
+    const predictionCursor = Prediction.find({
+      symbol,
+      $or: [
+        { patternsByLength: { $exists: false } },
+        { patternsByLength: { $eq: {} } }
+      ]
+    }).select({ _id: 1, predictionEpoch: 1 }).sort({ predictionEpoch: 1 }).lean().cursor();
+
+    const rollingDigits = [];
+    let updated = 0;
+    let operations = [];
+    for await (const prediction of predictionCursor) {
+      while (nextTick && Number(nextTick.epoch) <= Number(prediction.predictionEpoch)) {
+        if (Number.isInteger(nextTick.digit) && nextTick.digit >= 0 && nextTick.digit <= 9) {
+          rollingDigits.push(nextTick.digit);
+          if (rollingDigits.length > 6) rollingDigits.shift();
+        }
+        nextTick = await tickCursor.next();
+      }
+      if (rollingDigits.length < 2) continue;
+      const patternsByLength = {};
+      for (const length of [2, 3, 4, 5, 6]) {
+        if (rollingDigits.length >= length) patternsByLength[String(length)] = rollingDigits.slice(-length);
+      }
+      operations.push({ updateOne: { filter: { _id: prediction._id }, update: { $set: { patternsByLength } } } });
+      if (operations.length >= 500) {
+        const result = await Prediction.bulkWrite(operations, { ordered: false });
+        updated += result.modifiedCount || 0;
+        operations = [];
+      }
+    }
+    if (operations.length) {
+      const result = await Prediction.bulkWrite(operations, { ordered: false });
+      updated += result.modifiedCount || 0;
+    }
+    await tickCursor.close();
+    await predictionCursor.close();
+    results.push({ symbol, updatedPredictions: updated });
+  }
+  return results;
+}
 
 /*
  * Background time-pattern rebuild state.
@@ -617,6 +674,33 @@ router.post(
   rebuildTimePatterns
 );
 
+
+/* Backfill multi-scale contexts for historical prediction outcomes. */
+router.get('/prediction-patterns/rebuild-status', (req, res) => res.json({ success: true, ...predictionPatternRebuildState }));
+
+router.post('/prediction-patterns/rebuild', (req, res) => {
+  if (req.query.confirm !== 'BUILD_MULTISCALE_PREDICTION_MEMORY' && req.body?.confirm !== 'BUILD_MULTISCALE_PREDICTION_MEMORY') {
+    return res.status(400).json({ success: false, error: 'Confirmation required', required: 'confirm=BUILD_MULTISCALE_PREDICTION_MEMORY' });
+  }
+  if (predictionPatternRebuildState.running) return res.status(409).json({ success: false, status: 'RUNNING', ...predictionPatternRebuildState });
+  predictionPatternRebuildState.running = true;
+  predictionPatternRebuildState.startedAt = new Date().toISOString();
+  predictionPatternRebuildState.finishedAt = null;
+  predictionPatternRebuildState.error = null;
+  predictionPatternRebuildState.results = [];
+  setImmediate(async () => {
+    try {
+      predictionPatternRebuildState.results = await rebuildPredictionPatternContexts();
+    } catch (error) {
+      predictionPatternRebuildState.error = error?.message || String(error);
+    } finally {
+      predictionPatternRebuildState.running = false;
+      predictionPatternRebuildState.currentSymbol = null;
+      predictionPatternRebuildState.finishedAt = new Date().toISOString();
+    }
+  });
+  return res.status(202).json({ success: true, status: 'STARTED', message: 'Historical predictions are being backfilled with 2-6 digit contexts.', monitor: '/historical/prediction-patterns/rebuild-status' });
+});
 
 /* Strict weekday + Nairobi-local-time pattern memory. */
 const dayTimeRebuildState = { running: false, startedAt: null, finishedAt: null, error: null, results: [] };
