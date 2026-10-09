@@ -546,6 +546,29 @@ async function calculatePerformanceMemory(
     }
   }
 
+  // Track resolved outcomes for every context length (2-6), not only 3 digits.
+  const patternPerformanceByLength = {};
+  for (const length of PATTERN_LENGTHS) {
+    const pattern = currentPatterns[length]?.pattern || [];
+    const stats = { counts: Array(DIGIT_COUNT).fill(0), wins: Array(DIGIT_COUNT).fill(0), losses: Array(DIGIT_COUNT).fill(0), probabilities: Array(DIGIT_COUNT).fill(0), samples: 0, pattern: [...pattern] };
+    if (pattern.length === length && pattern.every(digit => validDigit(digit) !== null)) {
+      const field = `patternsByLength.${length}`;
+      const matching = await Prediction.find({ symbol, [field]: pattern, result: { $in: ['WIN', 'LOSS'] }, predictedDigit: { $gte: 0, $lte: 9 } }).sort({ resolvedAt: -1 }).limit(PERFORMANCE_LIMIT).lean();
+      stats.samples = matching.length;
+      for (const item of matching) {
+        const digit = validDigit(item.predictedDigit);
+        if (digit === null) continue;
+        stats.counts[digit]++;
+        if (item.result === 'WIN') stats.wins[digit]++;
+        else if (item.result === 'LOSS') stats.losses[digit]++;
+      }
+      for (let digit = 0; digit < DIGIT_COUNT; digit++) {
+        if (stats.counts[digit] > 0) stats.probabilities[digit] = (stats.wins[digit] + 1) / (stats.counts[digit] + 2);
+      }
+    }
+    patternPerformanceByLength[length] = stats;
+  }
+
   /*
    * Exact 3-digit context takes priority.
    * Otherwise use broader current-digit performance.
@@ -591,7 +614,8 @@ async function calculatePerformanceMemory(
 
     totalPredictions: generalPredictions.length,
 
-    contextPredictions: contextPredictions.length
+    contextPredictions: contextPredictions.length,
+    patternPerformanceByLength
   };
 }
 
@@ -817,6 +841,22 @@ function combineMemories({
 
     adjusted[digit] =
       base[digit] * adjustment;
+  }
+
+  // Use resolved outcomes from every exact sequence length.
+  // The average evidence adjustment is bounded and sample-weighted.
+  for (let digit = 0; digit < DIGIT_COUNT; digit++) {
+    let weightedSignal = 0;
+    let totalReliability = 0;
+    for (const length of PATTERN_LENGTHS) {
+      const stats = performance.patternPerformanceByLength?.[length];
+      const samples = stats?.counts?.[digit] || 0;
+      if (!samples) continue;
+      const reliability = samples / (samples + 10);
+      weightedSignal += reliability * ((stats.probabilities[digit] - 0.5) * 2);
+      totalReliability += reliability;
+    }
+    if (totalReliability > 0) adjusted[digit] *= 1 + (0.15 * (weightedSignal / totalReliability));
   }
 
   /*
@@ -1400,6 +1440,10 @@ export async function predictNextDigit(
       patterns[3]?.pattern ||
       [],
 
+    patternsByLength: Object.fromEntries(
+      PATTERN_LENGTHS.map(length => [String(length), patterns[length]?.pattern || []])
+    ),
+
     transitionSamples:
       transition.total,
 
@@ -1474,6 +1518,19 @@ export async function predictNextDigit(
         performance.sources[
           best.digit
         ],
+
+      patternPerformanceByLength: Object.fromEntries(
+        PATTERN_LENGTHS.map(length => {
+          const stats = performance.patternPerformanceByLength?.[length];
+          return [String(length), {
+            pattern: stats?.pattern || [],
+            samples: stats?.counts?.[best.digit] || 0,
+            wins: stats?.wins?.[best.digit] || 0,
+            losses: stats?.losses?.[best.digit] || 0,
+            winRate: stats?.counts?.[best.digit] ? Number((stats.probabilities[best.digit] * 100).toFixed(2)) : null
+          }];
+        })
+      ),
 
       patternAgreement:
         patternAgreement.agreement[
