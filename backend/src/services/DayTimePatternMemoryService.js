@@ -258,10 +258,46 @@ export async function rebuildDayTimePatternMemory({ symbols = SYMBOLS } = {}) {
 }
 
 export async function getDayTimePatternMemory({ symbol, limit = 50 } = {}) {
-  return DayTimePatternMemory.find({ symbol })
+  const rows = await DayTimePatternMemory.find({ symbol })
     .sort({ occurrenceCount: -1 })
     .limit(Math.min(Math.max(Number(limit) || 50, 1), 200))
     .lean();
+
+  return rows.map(row => {
+    const discoveryTotal = Number(row.discoveryTotalObservations || 0);
+    const discoveryCount = Number(row.occurrenceCount || 0);
+    const validationTotal = Number(row.validationTotalObservations || 0);
+    const validationCount = Number(row.validationOccurrenceCount || 0);
+    const discoveryRate = discoveryTotal ? discoveryCount / discoveryTotal : 0;
+    const validationRate = validationTotal ? validationCount / validationTotal : 0;
+    const discoveryLowerBound = wilsonLowerBound(discoveryCount, discoveryTotal);
+    const validationLowerBound = wilsonLowerBound(validationCount, validationTotal);
+    const discoveryDates = (row.discoveryDateKeys || []).length;
+    const validationDates = (row.validationDateKeys || []).length;
+
+    let status = 'COLLECTING_EVIDENCE';
+    if (
+      discoveryDates >= MIN_DISCOVERY_DATES &&
+      discoveryLowerBound > BASELINE
+    ) {
+      status = (
+        validationDates >= MIN_VALIDATION_DATES &&
+        validationLowerBound > BASELINE
+      ) ? 'ESTABLISHED_PATTERN' : 'VALIDATING_PATTERN';
+    }
+
+    return {
+      ...row,
+      status,
+      discoveryRate: Number((discoveryRate * 100).toFixed(2)),
+      discoveryLowerBound: Number((discoveryLowerBound * 100).toFixed(2)),
+      validationRate: Number((validationRate * 100).toFixed(2)),
+      validationLowerBound: Number((validationLowerBound * 100).toFixed(2)),
+      discoveryDates,
+      validationDates,
+      baselineRate: 10
+    };
+  });
 }
 
 // Legacy prediction outcome counters are retained for compatibility but are not used
