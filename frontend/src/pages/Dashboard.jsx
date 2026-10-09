@@ -414,16 +414,12 @@ export default function Dashboard() {
             return;
           }
 
-          setMarketData((previous) => ({
-            ...previous,
-
-            [symbol]: {
-              ...previous[symbol],
-              timePatternAlert: alertData,
-              connected: true,
-              error: null
-            }
-          }));
+          setMarketData((previous) => {
+            const oldAlerts = previous[symbol]?.timePatternAlerts || [];
+            const key = item => `${item.weekday}:${item.timeLabel}:${item.digit}`;
+            const nextAlerts = [...oldAlerts.filter(item => key(item) !== key(alertData)), alertData];
+            return { ...previous, [symbol]: { ...previous[symbol], timePatternAlert: alertData, timePatternAlerts: nextAlerts, connected: true, error: null } };
+          });
 
           /*
            * Use the browser notification only when
@@ -442,7 +438,7 @@ export default function Dashboard() {
                 body:
                   `Verified weekday/time pattern: digit ${alertData.digit} on ${alertData.weekday} at ${alertData.timeLabel} — discovery ${alertData.historicalRate}% (lower bound ${alertData.historicalLowerBound}%), validation ${alertData.validationRate}% (lower bound ${alertData.validationLowerBound}%) across ${alertData.discoveryDates} discovery dates and ${alertData.validationDates} validation dates.`,
                 tag:
-                  `time-pattern-${symbol}`
+                  `time-pattern-${symbol}-${alertData.weekday}-${alertData.timeLabel}-${alertData.digit}`
               }
             );
           }
@@ -561,32 +557,20 @@ export default function Dashboard() {
     const result =
       data.result;
 
-    const timePatternAlert =
-      data.timePatternAlert;
+    const timePatternAlerts =
+      data.timePatternAlerts || (data.timePatternAlert ? [data.timePatternAlert] : []);
 
     return (
       <div style={styles.predictionBox}>
 
-        {timePatternAlert && (
-          <div style={styles.timePatternAlert}>
-            <div style={styles.timePatternAlertTitle}>
-              {timePatternAlert.status === 'ESTABLISHED_PATTERN' ? '🔔 VERIFIED WEEKDAY · TIME PATTERN' : '⏳ VALIDATING PATTERN'}
-            </div>
-            <div style={styles.timePatternAlertDigit}>
-              DIGIT {timePatternAlert.digit}
-            </div>
-            <div style={styles.timePatternAlertDetails}>
-              {timePatternAlert.weekday} · {timePatternAlert.timeLabel} · discovery {timePatternAlert.historicalRate}% · validation {timePatternAlert.validationRate}%
-            </div>
-            <div style={styles.timePatternAlertEvidence}>
-              {timePatternAlert.status === 'ESTABLISHED_PATTERN'
-                ? `Separate chronological holdout · baseline 10% · discovery lower bound ${timePatternAlert.historicalLowerBound}% · validation lower bound ${timePatternAlert.validationLowerBound}% · dates ${timePatternAlert.discoveryDates}/${timePatternAlert.validationDates}`
-                : timePatternAlert.historicalTotalObservations
-                  ? `Baseline 10% · ${timePatternAlert.liftVsBaseline}× baseline · lower bound ${timePatternAlert.historicalLowerBound}%`
-                  : `${timePatternAlert.wins} wins / ${timePatternAlert.losses} losses · streak ${timePatternAlert.currentWinStreak}`}
-            </div>
+        {timePatternAlerts.map((timePatternAlert) => (
+          <div key={`${timePatternAlert.weekday}-${timePatternAlert.timeLabel}-${timePatternAlert.digit}`} style={styles.timePatternAlert}>
+            <div style={styles.timePatternAlertTitle}>🔔 VERIFIED WEEKDAY · TIME PATTERN</div>
+            <div style={styles.timePatternAlertDigit}>DIGIT {timePatternAlert.digit}</div>
+            <div style={styles.timePatternAlertDetails}>{timePatternAlert.weekday} · {timePatternAlert.timeLabel} · discovery {timePatternAlert.historicalRate}% · validation {timePatternAlert.validationRate}%</div>
+            <div style={styles.timePatternAlertEvidence}>Separate chronological holdout · baseline 10% · discovery lower bound {timePatternAlert.historicalLowerBound}% · validation lower bound {timePatternAlert.validationLowerBound}% · dates {timePatternAlert.discoveryDates}/{timePatternAlert.validationDates}</div>
           </div>
-        )}
+        ))}
 
         <div style={styles.predictionHeader}>
           <div style={styles.predictionTitle}>
@@ -657,6 +641,16 @@ export default function Dashboard() {
                 )
               : '—'}
           </strong>
+        </div>
+
+        <div style={styles.patternAnalysis}>
+          <div style={styles.patternAnalysisTitle}>MULTI-SCALE PATTERN MEMORY</div>
+          {(prediction.patternAnalysis || []).map((item) => (
+            <div key={item.length} style={styles.patternAnalysisRow}>
+              <span>{item.length}-digit context: {Array.isArray(item.pattern) ? item.pattern.join(' → ') : '—'}</span>
+              <strong>{item.samples} samples · {item.strongestDigit == null ? 'no match' : `top ${item.strongestDigit} (${item.strongestProbability}%)`}</strong>
+            </div>
+          ))}
         </div>
 
         <div style={styles.row}>
@@ -1314,6 +1308,18 @@ const styles = {
     fontSize: '11px',
 
     textAlign: 'right'
+  },
+
+  patternAnalysis: {
+    marginTop: '14px', padding: '12px', borderRadius: '10px',
+    background: 'rgba(77,163,255,0.06)', border: '1px solid rgba(143,193,255,0.18)'
+  },
+  patternAnalysisTitle: {
+    color: '#8fc1ff', fontSize: '10px', fontWeight: '900', letterSpacing: '0.8px', marginBottom: '6px'
+  },
+  patternAnalysisRow: {
+    display: 'flex', justifyContent: 'space-between', gap: '10px', padding: '6px 0',
+    borderBottom: '1px solid rgba(255,255,255,0.06)', color: '#aeb6c4', fontSize: '11px'
   },
 
   timePatternAlert: {
