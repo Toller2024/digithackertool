@@ -182,3 +182,21 @@ export async function rebuildDayTimePatternMemory({ symbols = SYMBOLS } = {}) {
 export async function getDayTimePatternMemory({ symbol, limit = 50 } = {}) {
   return DayTimePatternMemory.find({ symbol }).sort({ occurrenceCount: -1 }).limit(Math.min(Math.max(Number(limit) || 50, 1), 200)).lean();
 }
+
+export async function recordDayTimePredictionOutcome({ symbol, predictedDigit, won, predictionEpoch }) {
+  if (!SYMBOLS.includes(symbol) || !Number.isInteger(predictedDigit) || predictedDigit < 0 || predictedDigit > 9) return null;
+  const parts = getLocalParts(predictionEpoch);
+  if (!parts) return null;
+  return DayTimePatternMemory.updateOne(
+    { symbol, weekday: parts.weekday, timeSlot: parts.timeSlot, digit: predictedDigit },
+    {
+      $inc: {
+        validationSamples: 1,
+        [won ? 'validationWins' : 'validationLosses']: 1
+      },
+      $setOnInsert: { occurrenceCount: 0, firstObservedEpoch: Number(predictionEpoch) },
+      $set: { lastObservedEpoch: Number(predictionEpoch) }
+    },
+    { upsert: true }
+  );
+}
