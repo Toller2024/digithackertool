@@ -17,6 +17,18 @@ import {
  * from modifying the learning state at the same time.
  */
 const symbolQueues = new Map();
+const lastDayTimeAlertDateByPattern = new Map();
+
+function getNairobiDateKey(epoch) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Nairobi',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date(Number(epoch) * 1000));
+  const get = type => parts.find(part => part.type === type)?.value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
 
 function queueForSymbol(symbol, task) {
   const previous =
@@ -101,7 +113,16 @@ export function processTickForLearning({
 
       // Only emit alerts that pass the weekday/time historical holdout test.
       // Legacy minute/10-second patterns are still recorded, but cannot trigger an alert.
-      const timePatternAlert = await findEstablishedDayTimePattern({ symbol, epoch });
+      const establishedCandidate = await findEstablishedDayTimePattern({ symbol, epoch });
+      let timePatternAlert = null;
+      if (establishedCandidate) {
+        const dateKey = getNairobiDateKey(epoch);
+        const patternKey = `${symbol}:${establishedCandidate.weekday}:${establishedCandidate.timeLabel}`;
+        if (lastDayTimeAlertDateByPattern.get(patternKey) !== dateKey) {
+          lastDayTimeAlertDateByPattern.set(patternKey, dateKey);
+          timePatternAlert = establishedCandidate;
+        }
+      }
 
       await recordDayTimeTick({ symbol, digit, epoch });
       await recordTimePatternTick({
