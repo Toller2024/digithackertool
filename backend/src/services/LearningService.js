@@ -5,6 +5,11 @@ import {
   recordTimePatternOutcome,
   findTimePatternAlert
 } from './TimePatternMemoryService.js';
+import {
+  recordDayTimeTick,
+  recordDayTimePredictionOutcome,
+  findEstablishedDayTimePattern
+} from './DayTimePatternMemoryService.js';
 
 /*
  * Process ticks sequentially for each symbol.
@@ -95,12 +100,10 @@ export function processTickForLearning({
        * ==========================================
        */
 
-      const timePatternAlert =
-        await findTimePatternAlert({
-          symbol,
-          epoch
-        });
+      const dayTimeAlert = await findEstablishedDayTimePattern({ symbol, epoch });
+      const timePatternAlert = dayTimeAlert || await findTimePatternAlert({ symbol, epoch });
 
+      await recordDayTimeTick({ symbol, digit, epoch });
       await recordTimePatternTick({
         symbol,
         digit,
@@ -144,6 +147,13 @@ export function processTickForLearning({
           new Date();
 
         await pending.save();
+
+        await recordDayTimePredictionOutcome({
+          symbol,
+          predictedDigit: pending.predictedDigit,
+          won,
+          predictionEpoch: pending.predictionEpoch
+        });
 
         const timePatternOutcome =
           await recordTimePatternOutcome({
