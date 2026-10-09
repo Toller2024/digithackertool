@@ -324,8 +324,6 @@ export default function Dashboard() {
 
               prediction,
 
-              timePatternAlert: prediction.timePattern || null,
-
               connected: true,
 
               error: null
