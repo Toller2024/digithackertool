@@ -106,13 +106,24 @@ export async function recordDayTimeTick({ symbol, digit, epoch }) {
   if (!SYMBOLS.includes(symbol) || !Number.isInteger(digit) || digit < 0 || digit > 9) return null;
   const parts = getLocalParts(epoch);
   if (!parts) return null;
+  // Treat incoming live ticks as new validation data, never as discovery/training data.
+  await DayTimePatternMemory.updateMany(
+    { symbol, weekday: parts.weekday, timeSlot: parts.timeSlot },
+    { $inc: { validationTotalObservations: 1 } }
+  );
   await DayTimePatternMemory.updateOne(
     { symbol, weekday: parts.weekday, timeSlot: parts.timeSlot, digit },
     {
-      $inc: { occurrenceCount: 1 },
-      $addToSet: { discoveryDateKeys: parts.dateKey },
+      $inc: { validationOccurrenceCount: 1 },
+      $addToSet: { validationDateKeys: parts.dateKey },
       $set: { lastObservedEpoch: Number(epoch) },
-      $setOnInsert: { firstObservedEpoch: Number(epoch) }
+      $setOnInsert: {
+        firstObservedEpoch: Number(epoch),
+        occurrenceCount: 0,
+        discoveryTotalObservations: 0,
+        discoveryDateKeys: [],
+        validationTotalObservations: 1
+      }
     },
     { upsert: true }
   );
