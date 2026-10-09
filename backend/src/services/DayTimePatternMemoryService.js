@@ -7,7 +7,7 @@ const MIN_SLOT_OBSERVATIONS = 300;
 const MIN_DIGIT_OCCURRENCES = 35;
 const MIN_DIGIT_SHARE = 0.15;
 const MIN_VALIDATION_SAMPLES = 50;
-const MIN_VALIDATION_RATE = 0.70;
+const MIN_VALIDATION_RATE = 0.98;
 const BASELINE = 0.10;
 
 function getLocalParts(epoch) {
