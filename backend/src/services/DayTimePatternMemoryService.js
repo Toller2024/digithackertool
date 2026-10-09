@@ -64,44 +64,6 @@ function aggregateTick(map, symbol, tick, phase) {
   map.set(key, item);
 }
 
-async function flushBuckets(symbol, buckets) {
-  if (!buckets.size) return;
-  const rows = Array.from(buckets.values());
-  // Each digit row needs the total number of ticks observed in its slot, not only its own digit.
-  const slotTotals = new Map();
-  for (const row of rows) {
-    const key = [row.symbol, row.weekday, row.timeSlot].join(':');
-    const current = slotTotals.get(key) || { discovery: 0, validation: 0, discoveryDates: new Set(), validationDates: new Set() };
-    current.discovery += row.discoveryTotalObservations;
-    current.validation += row.validationTotalObservations;
-    row.discoveryDateKeys.forEach(date => current.discoveryDates.add(date));
-    row.validationDateKeys.forEach(date => current.validationDates.add(date));
-    slotTotals.set(key, current);
-  }
-  // Aggregates are accumulated across cursor batches by the caller before this is called.
-  const operations = rows.map(row => {
-    const key = [symbol, row.weekday, row.timeSlot].join(':');
-    const totals = slotTotals.get(key);
-    return {
-      updateOne: {
-        filter: { symbol, weekday: row.weekday, timeSlot: row.timeSlot, digit: row.digit },
-        update: { $set: {
-          ...row,
-          discoveryTotalObservations: totals.discovery,
-          validationTotalObservations: totals.validation,
-          discoverySlotDateCount: totals.discoveryDates.size,
-          validationSlotDateCount: totals.validationDates.size
-        } },
-        upsert: true
-      }
-    };
-  });
-  for (let i = 0; i < operations.length; i += 1000) {
-    await DayTimePatternMemory.bulkWrite(operations.slice(i, i + 1000), { ordered: false });
-  }
-  buckets.clear();
-}
-
 export async function recordDayTimeTick({ symbol, digit, epoch }) {
   if (!SYMBOLS.includes(symbol) || !Number.isInteger(digit) || digit < 0 || digit > 9) return null;
   const parts = getLocalParts(epoch);
