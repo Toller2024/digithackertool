@@ -499,11 +499,9 @@ async function calculatePerformanceMemory(
   }
 
   /*
-   * Prediction.js currently stores the 3-digit context.
-   * Therefore exact-pattern WIN/LOSS learning is based
-   * on that stored 3-digit context only. This avoids
-   * pretending that 2/4/5/6-digit performance history
-   * exists when it is not stored in Prediction documents.
+   * Keep the legacy 3-digit query for older records. The additional
+   * patternsByLength queries below learn exact-context outcomes for
+   * every supported length when those contexts are available.
    */
   const exactPattern =
     Array.isArray(currentPatterns[3]?.pattern)
