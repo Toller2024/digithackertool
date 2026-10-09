@@ -530,18 +530,10 @@ router.get(
                  * RECURRING TIME-PATTERN ALERT
                  * =================================
                  */
-                if (learning?.timePatternAlert) {
-                  console.log(
-                    `⏰ TIME-PATTERN ALERT ${symbol}:`,
-                    JSON.stringify(
-                      learning.timePatternAlert
-                    )
-                  );
-
-                  sendSSE(
-                    'timePatternAlert',
-                    learning.timePatternAlert
-                  );
+                const establishedAlerts = learning?.timePatternAlerts || (learning?.timePatternAlert ? [learning.timePatternAlert] : []);
+                for (const alert of establishedAlerts) {
+                  console.log(`⏰ TIME-PATTERN ALERT ${symbol}:`, JSON.stringify(alert));
+                  sendSSE('timePatternAlert', alert);
                 }
 
                 /*
