@@ -185,6 +185,16 @@ predictionSchema.index({
   predictedAt: -1
 });
 
+// Indexed exact-context outcome lookups for every supported sequence length.
+for (const length of [2, 3, 4, 5, 6]) {
+  predictionSchema.index({
+    symbol: 1,
+    [`patternsByLength.${length}`]: 1,
+    result: 1,
+    resolvedAt: -1
+  });
+}
+
 /*
  * Prevent duplicate predictions for the same
  * symbol and prediction tick.
