@@ -407,7 +407,8 @@ export default function Dashboard() {
           const alertData =
             JSON.parse(event.data);
 
-          if (!alertData) {
+          if (!alertData || alertData.status !== 'ESTABLISHED_PATTERN') {
+            // Ignore legacy time alerts; only show independently validated weekday/time patterns.
             return;
           }
 
@@ -441,7 +442,7 @@ export default function Dashboard() {
               `DigiHackerTool — ${symbol}`,
               {
                 body:
-                  `Established historical pattern: digit ${alertData.digit} around ${alertData.timeLabel} UTC — ${alertData.historicalRate ?? alertData.winRate}% historical frequency from ${alertData.historicalOccurrences ?? alertData.predictionSamples} matching ticks.`,
+                  `Verified weekday/time pattern: digit ${alertData.digit} on ${alertData.weekday} at ${alertData.timeLabel} — discovery ${alertData.historicalRate}% (lower bound ${alertData.historicalLowerBound}%), validation ${alertData.validationRate}% (lower bound ${alertData.validationLowerBound}%) across ${alertData.discoveryDates} discovery dates and ${alertData.validationDates} validation dates.`,
                 tag:
                   `time-pattern-${symbol}`
               }
@@ -571,17 +572,17 @@ export default function Dashboard() {
         {timePatternAlert && (
           <div style={styles.timePatternAlert}>
             <div style={styles.timePatternAlertTitle}>
-              {timePatternAlert.status === 'ESTABLISHED_VERY_HIGH_EVIDENCE' ? '🔔 ESTABLISHED · VERY HIGH EVIDENCE' : '⏰ ESTABLISHED TIME-PATTERN'}
+              {timePatternAlert.status === 'ESTABLISHED_PATTERN' ? '🔔 VERIFIED WEEKDAY · TIME PATTERN' : '⏳ VALIDATING PATTERN'}
             </div>
             <div style={styles.timePatternAlertDigit}>
               DIGIT {timePatternAlert.digit}
             </div>
             <div style={styles.timePatternAlertDetails}>
-              {timePatternAlert.weekday ? `${timePatternAlert.weekday} · ${timePatternAlert.timeLabel}` : `Around ${timePatternAlert.timeLabel} UTC`} · {timePatternAlert.historicalRate ?? timePatternAlert.winRate}% historical digit frequency · {timePatternAlert.historicalOccurrences ?? timePatternAlert.predictionSamples} matching ticks
+              {timePatternAlert.weekday} · {timePatternAlert.timeLabel} · discovery {timePatternAlert.historicalRate}% · validation {timePatternAlert.validationRate}%
             </div>
             <div style={styles.timePatternAlertEvidence}>
-              {timePatternAlert.status === 'ESTABLISHED_VERY_HIGH_EVIDENCE'
-                ? `Validation ${timePatternAlert.validationWins}/${timePatternAlert.validationSamples} wins (${timePatternAlert.validationWinRate}%) · baseline 10% · ${timePatternAlert.liftVsBaseline}× baseline · lower bound ${timePatternAlert.historicalLowerBound}%`
+              {timePatternAlert.status === 'ESTABLISHED_PATTERN'
+                ? `Separate chronological holdout · baseline 10% · discovery lower bound ${timePatternAlert.historicalLowerBound}% · validation lower bound ${timePatternAlert.validationLowerBound}% · dates ${timePatternAlert.discoveryDates}/${timePatternAlert.validationDates}`
                 : timePatternAlert.historicalTotalObservations
                   ? `Baseline 10% · ${timePatternAlert.liftVsBaseline}× baseline · lower bound ${timePatternAlert.historicalLowerBound}%`
                   : `${timePatternAlert.wins} wins / ${timePatternAlert.losses} losses · streak ${timePatternAlert.currentWinStreak}`}
