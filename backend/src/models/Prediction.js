@@ -39,6 +39,12 @@ const predictionSchema = new mongoose.Schema(
       default: []
     },
 
+    // Exact recent contexts for every supported sequence length (2-6).
+    patternsByLength: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {}
+    },
+
     /*
      * The predicted next digit.
      */
