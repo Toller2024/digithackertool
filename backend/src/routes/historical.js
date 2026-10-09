@@ -13,6 +13,10 @@ import {
   rebuildTimePatternMemory,
   getTimePatternMemory
 } from '../services/TimePatternMemoryService.js';
+import {
+  rebuildDayTimePatternMemory,
+  getDayTimePatternMemory
+} from '../services/DayTimePatternMemoryService.js';
 
 const router = express.Router();
 
@@ -612,6 +616,46 @@ router.post(
   '/time-pattern/rebuild',
   rebuildTimePatterns
 );
+
+
+/* Strict weekday + Nairobi-local-time pattern memory. */
+const dayTimeRebuildState = { running: false, startedAt: null, finishedAt: null, error: null, results: [] };
+
+router.get('/day-time/rebuild-status', (req, res) => res.json({ success: true, ...dayTimeRebuildState }));
+
+router.post('/day-time/rebuild', (req, res) => {
+  if (req.query.confirm !== 'BUILD_DAY_TIME_PATTERNS' && req.body?.confirm !== 'BUILD_DAY_TIME_PATTERNS') {
+    return res.status(400).json({ success: false, error: 'Confirmation required', required: 'confirm=BUILD_DAY_TIME_PATTERNS' });
+  }
+  if (dayTimeRebuildState.running) return res.status(409).json({ success: false, status: 'RUNNING', ...dayTimeRebuildState });
+  dayTimeRebuildState.running = true;
+  dayTimeRebuildState.startedAt = new Date().toISOString();
+  dayTimeRebuildState.finishedAt = null;
+  dayTimeRebuildState.error = null;
+  dayTimeRebuildState.results = [];
+  setImmediate(async () => {
+    try {
+      dayTimeRebuildState.results = await rebuildDayTimePatternMemory({ symbols: SYMBOLS });
+    } catch (error) {
+      dayTimeRebuildState.error = error?.message || String(error);
+    } finally {
+      dayTimeRebuildState.running = false;
+      dayTimeRebuildState.finishedAt = new Date().toISOString();
+    }
+  });
+  return res.status(202).json({ success: true, status: 'STARTED', message: 'Weekday/time memory rebuild started.', monitor: '/historical/day-time/rebuild-status' });
+});
+
+router.get('/day-time/:symbol', async (req, res) => {
+  try {
+    const symbol = req.params.symbol.toUpperCase();
+    if (!SYMBOLS.includes(symbol)) return res.status(400).json({ success: false, error: 'Unsupported symbol', allowedSymbols: SYMBOLS });
+    const memory = await getDayTimePatternMemory({ symbol, limit: req.query.limit || 50 });
+    return res.json({ success: true, symbol, timeZone: 'Africa/Nairobi', count: memory.length, memory });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error?.message || 'Unable to read weekday/time memory' });
+  }
+});
 
 router.get(
   '/time-pattern/:symbol',
