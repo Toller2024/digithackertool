@@ -7,7 +7,7 @@ import {
 import {
   recordDayTimeTick,
   recordDayTimePredictionOutcome,
-  findEstablishedDayTimePattern
+  findEstablishedDayTimePatterns
 } from './DayTimePatternMemoryService.js';
 
 /*
@@ -113,16 +113,17 @@ export function processTickForLearning({
 
       // Only emit alerts that pass the weekday/time historical holdout test.
       // Legacy minute/10-second patterns are still recorded, but cannot trigger an alert.
-      const establishedCandidate = await findEstablishedDayTimePattern({ symbol, epoch });
-      let timePatternAlert = null;
-      if (establishedCandidate) {
-        const dateKey = getNairobiDateKey(epoch);
-        const patternKey = `${symbol}:${establishedCandidate.weekday}:${establishedCandidate.timeLabel}`;
+      const establishedCandidates = await findEstablishedDayTimePatterns({ symbol, epoch });
+      const timePatternAlerts = [];
+      const dateKey = getNairobiDateKey(epoch);
+      for (const candidate of establishedCandidates) {
+        const patternKey = `${symbol}:${candidate.weekday}:${candidate.timeLabel}:digit-${candidate.digit}`;
         if (lastDayTimeAlertDateByPattern.get(patternKey) !== dateKey) {
           lastDayTimeAlertDateByPattern.set(patternKey, dateKey);
-          timePatternAlert = establishedCandidate;
+          timePatternAlerts.push(candidate);
         }
       }
+      const timePatternAlert = timePatternAlerts[0] || null;
 
       await recordDayTimeTick({ symbol, digit, epoch });
       await recordTimePatternTick({
@@ -243,6 +244,7 @@ export function processTickForLearning({
         return {
           resolved,
           timePatternAlert,
+          timePatternAlerts,
 
           prediction: {
             id:
@@ -278,6 +280,9 @@ export function processTickForLearning({
 
             pattern:
               existing.pattern || [],
+
+            patternsByLength:
+              existing.patternsByLength || {},
 
             transitionSamples:
               existing.transitionSamples,
@@ -322,6 +327,7 @@ export function processTickForLearning({
         return {
           resolved,
           timePatternAlert,
+          timePatternAlerts,
           prediction: null
         };
       }
@@ -344,6 +350,7 @@ export function processTickForLearning({
         return {
           resolved,
           timePatternAlert,
+          timePatternAlerts,
           prediction: null
         };
       }
@@ -368,6 +375,9 @@ export function processTickForLearning({
             )
               ? prediction.pattern
               : [],
+
+          patternsByLength:
+            prediction.patternsByLength || {},
 
           predictedDigit:
             prediction.prediction,
@@ -410,6 +420,7 @@ export function processTickForLearning({
       return {
         resolved,
         timePatternAlert,
+        timePatternAlerts,
 
         prediction: {
           id:
@@ -440,6 +451,15 @@ export function processTickForLearning({
 
           pattern:
             prediction.pattern || [],
+
+          patternsByLength:
+            prediction.patternsByLength || {},
+
+          patternAnalysis:
+            prediction.patternAnalysis || [],
+
+          learning:
+            prediction.learning || {},
 
           transitionSamples:
             prediction.transitionSamples,
