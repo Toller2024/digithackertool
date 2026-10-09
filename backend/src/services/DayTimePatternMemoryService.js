@@ -92,14 +92,11 @@ export async function recordDayTimeTick({ symbol, digit, epoch }) {
   return parts;
 }
 
-export async function findEstablishedDayTimePattern({ symbol, epoch }) {
-  if (!SYMBOLS.includes(symbol)) return null;
+export async function findEstablishedDayTimePatterns({ symbol, epoch }) {
+  if (!SYMBOLS.includes(symbol)) return [];
   const parts = getLocalParts(epoch);
-  if (!parts) return null;
-  const rows = await DayTimePatternMemory.find({
-    symbol, weekday: parts.weekday, timeSlot: parts.timeSlot
-  }).lean();
-
+  if (!parts) return [];
+  const rows = await DayTimePatternMemory.find({ symbol, weekday: parts.weekday, timeSlot: parts.timeSlot }).lean();
   const eligible = rows.map(row => {
     const discoveryTotal = Number(row.discoveryTotalObservations || 0);
     const discoveryCount = Number(row.occurrenceCount || 0);
@@ -107,51 +104,47 @@ export async function findEstablishedDayTimePattern({ symbol, epoch }) {
     const validationCount = Number(row.validationOccurrenceCount || 0);
     const discoveryRate = discoveryTotal ? discoveryCount / discoveryTotal : 0;
     const validationRate = validationTotal ? validationCount / validationTotal : 0;
-    return {
-      ...row, discoveryTotal, discoveryCount, validationTotal, validationCount,
-      discoveryRate, validationRate,
+    return { ...row, discoveryTotal, discoveryCount, validationTotal, validationCount, discoveryRate, validationRate,
       discoveryLowerBound: wilsonLowerBound(discoveryCount, discoveryTotal),
       validationLowerBound: wilsonLowerBound(validationCount, validationTotal),
       discoveryDates: (row.discoveryDateKeys || []).length,
-      validationDates: (row.validationDateKeys || []).length
-    };
+      validationDates: (row.validationDateKeys || []).length };
   }).filter(row =>
     row.discoveryDates >= MIN_DISCOVERY_DATES &&
     row.validationDates >= MIN_VALIDATION_DATES &&
     row.discoveryLowerBound > BASELINE &&
     row.validationLowerBound > BASELINE
-  ).sort((a, b) =>
-    b.validationLowerBound - a.validationLowerBound ||
-    b.discoveryLowerBound - a.discoveryLowerBound
-  );
-
-  const best = eligible[0];
-  if (!best) return null;
+  ).sort((a, b) => b.validationLowerBound - a.validationLowerBound || b.discoveryLowerBound - a.discoveryLowerBound);
   const weekdayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const hour = Math.floor(parts.timeSlot / 60);
   const minute = parts.timeSlot % 60;
-  return {
+  return eligible.map(pattern => ({
     type: 'day-time-established-alert',
     status: 'ESTABLISHED_PATTERN',
     evidence: 'CHRONOLOGICAL_HOLDOUT_VALIDATION',
-    symbol, digit: best.digit,
+    symbol, digit: pattern.digit,
     weekday: weekdayNames[parts.weekday],
     timeZone: 'Africa/Nairobi',
     timeLabel: String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0') + ' EAT',
-    historicalOccurrences: best.discoveryCount,
-    historicalTotalObservations: best.discoveryTotal,
-    historicalRate: Number((best.discoveryRate * 100).toFixed(2)),
-    historicalLowerBound: Number((best.discoveryLowerBound * 100).toFixed(2)),
-    validationOccurrences: best.validationCount,
-    validationTotalObservations: best.validationTotal,
-    validationRate: Number((best.validationRate * 100).toFixed(2)),
-    validationLowerBound: Number((best.validationLowerBound * 100).toFixed(2)),
-    discoveryDates: best.discoveryDates,
-    validationDates: best.validationDates,
+    historicalOccurrences: pattern.discoveryCount,
+    historicalTotalObservations: pattern.discoveryTotal,
+    historicalRate: Number((pattern.discoveryRate * 100).toFixed(2)),
+    historicalLowerBound: Number((pattern.discoveryLowerBound * 100).toFixed(2)),
+    validationOccurrences: pattern.validationCount,
+    validationTotalObservations: pattern.validationTotal,
+    validationRate: Number((pattern.validationRate * 100).toFixed(2)),
+    validationLowerBound: Number((pattern.validationLowerBound * 100).toFixed(2)),
+    discoveryDates: pattern.discoveryDates,
+    validationDates: pattern.validationDates,
     baselineRate: 10,
-    liftVsBaseline: Number((best.discoveryRate / BASELINE).toFixed(2)),
+    liftVsBaseline: Number((pattern.discoveryRate / BASELINE).toFixed(2)),
     observedAt: Number(epoch)
-  };
+  }));
+}
+
+export async function findEstablishedDayTimePattern(args) {
+  const patterns = await findEstablishedDayTimePatterns(args);
+  return patterns[0] || null;
 }
 
 export async function rebuildDayTimePatternMemory({ symbols = SYMBOLS } = {}) {
@@ -220,10 +213,10 @@ export async function rebuildDayTimePatternMemory({ symbols = SYMBOLS } = {}) {
 }
 
 export async function getDayTimePatternMemory({ symbol, limit = 50 } = {}) {
-  const rows = await DayTimePatternMemory.find({ symbol })
-    .sort({ occurrenceCount: -1 })
-    .limit(Math.min(Math.max(Number(limit) || 50, 1), 200))
-    .lean();
+  let query = DayTimePatternMemory.find({ symbol }).sort({ occurrenceCount: -1 });
+  const requestedLimit = Number(limit);
+  if (Number.isFinite(requestedLimit) && requestedLimit > 0) query = query.limit(Math.floor(requestedLimit));
+  const rows = await query.lean();
 
   return rows.map(row => {
     const discoveryTotal = Number(row.discoveryTotalObservations || 0);
