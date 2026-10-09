@@ -650,7 +650,7 @@ router.get('/day-time/:symbol', async (req, res) => {
   try {
     const symbol = req.params.symbol.toUpperCase();
     if (!SYMBOLS.includes(symbol)) return res.status(400).json({ success: false, error: 'Unsupported symbol', allowedSymbols: SYMBOLS });
-    const memory = await getDayTimePatternMemory({ symbol, limit: req.query.limit || 50 });
+    const memory = await getDayTimePatternMemory({ symbol, limit: req.query.limit ? Number(req.query.limit) : null });
     return res.json({ success: true, symbol, timeZone: 'Africa/Nairobi', count: memory.length, memory });
   } catch (error) {
     return res.status(500).json({ success: false, error: error?.message || 'Unable to read weekday/time memory' });
