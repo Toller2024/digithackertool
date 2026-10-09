@@ -571,18 +571,20 @@ export default function Dashboard() {
         {timePatternAlert && (
           <div style={styles.timePatternAlert}>
             <div style={styles.timePatternAlertTitle}>
-              ⏰ ESTABLISHED TIME-PATTERN
+              {timePatternAlert.status === 'ESTABLISHED_VERY_HIGH_EVIDENCE' ? '🔔 ESTABLISHED · VERY HIGH EVIDENCE' : '⏰ ESTABLISHED TIME-PATTERN'}
             </div>
             <div style={styles.timePatternAlertDigit}>
               DIGIT {timePatternAlert.digit}
             </div>
             <div style={styles.timePatternAlertDetails}>
-              Around {timePatternAlert.timeLabel} UTC · {timePatternAlert.historicalRate ?? timePatternAlert.winRate}% historical digit frequency · {timePatternAlert.historicalOccurrences ?? timePatternAlert.predictionSamples} matching ticks
+              {timePatternAlert.weekday ? `${timePatternAlert.weekday} · ${timePatternAlert.timeLabel}` : `Around ${timePatternAlert.timeLabel} UTC`} · {timePatternAlert.historicalRate ?? timePatternAlert.winRate}% historical digit frequency · {timePatternAlert.historicalOccurrences ?? timePatternAlert.predictionSamples} matching ticks
             </div>
             <div style={styles.timePatternAlertEvidence}>
-              {timePatternAlert.historicalTotalObservations
-                ? `Baseline 10% · ${timePatternAlert.liftVsBaseline}× baseline · lower bound ${timePatternAlert.historicalLowerBound}%`
-                : `${timePatternAlert.wins} wins / ${timePatternAlert.losses} losses · streak ${timePatternAlert.currentWinStreak}`}
+              {timePatternAlert.status === 'ESTABLISHED_VERY_HIGH_EVIDENCE'
+                ? `Validation ${timePatternAlert.validationWins}/${timePatternAlert.validationSamples} wins (${timePatternAlert.validationWinRate}%) · baseline 10% · ${timePatternAlert.liftVsBaseline}× baseline · lower bound ${timePatternAlert.historicalLowerBound}%`
+                : timePatternAlert.historicalTotalObservations
+                  ? `Baseline 10% · ${timePatternAlert.liftVsBaseline}× baseline · lower bound ${timePatternAlert.historicalLowerBound}%`
+                  : `${timePatternAlert.wins} wins / ${timePatternAlert.losses} losses · streak ${timePatternAlert.currentWinStreak}`}
             </div>
           </div>
         )}
