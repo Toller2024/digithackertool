@@ -5,7 +5,6 @@ import Prediction from '../models/Prediction.js';
 import { getPipSize, extractLastDigitFromQuote } from '../services/digitUtils.js';
 
 import {
-  collectHistoricalTicks,
   SYMBOLS,
   TARGET_TICKS_PER_SYMBOL
 } from '../services/historicalTicks.js';
@@ -24,20 +23,6 @@ import {
 } from '../services/DayTimePatternMemoryService.js';
 
 const router = express.Router();
-
-/*
- * Background long-term historical collection state.
- */
-const historicalCollectionState = {
-  running: false,
-  startedAt: null,
-  finishedAt: null,
-  error: null,
-  targetPerSymbol: TARGET_TICKS_PER_SYMBOL,
-  symbols: SYMBOLS,
-  currentSymbol: null,
-  results: []
-};
 
 /*
  * Background multi-scale prediction-context migration state.
@@ -293,98 +278,50 @@ router.post(
 router.post(
   '/collect/:symbol',
   async (req, res) => {
+    const symbol = String(req.params.symbol || '').toUpperCase();
+
+    if (!SYMBOLS.includes(symbol)) {
+      return res.status(400).json({
+        success: false,
+        error: `Unsupported symbol: ${symbol}`,
+        allowedSymbols: SYMBOLS
+      });
+    }
+
+    if (
+      req.query.confirm !== 'COLLECT_1M' &&
+      req.body?.confirm !== 'COLLECT_1M'
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: 'Confirmation required',
+        required: 'confirm=COLLECT_1M'
+      });
+    }
+
     try {
-      const symbol =
-        req.params.symbol.toUpperCase();
+      const result = await startPersistentHistoricalCollection([symbol]);
 
-      if (!SYMBOLS.includes(symbol)) {
-        return res.status(400).json({
-          success: false,
-          error:
-            `Unsupported symbol: ${symbol}`,
-          allowedSymbols: SYMBOLS
-        });
-      }
-
-      if (
-        req.query.confirm !== 'COLLECT_1M' &&
-        req.body?.confirm !== 'COLLECT_1M'
-      ) {
-        return res.status(400).json({
-          success: false,
-          error: 'Confirmation required',
-          required: 'confirm=COLLECT_1M'
-        });
-      }
-
-      if (historicalCollectionState.running) {
+      if (!result.started) {
         return res.status(409).json({
           success: false,
           status: 'RUNNING',
-          message:
-            'A historical collection is already running.'
+          message: 'A historical collection is already running.',
+          collection: result.status
         });
       }
-
-      historicalCollectionState.running = true;
-      historicalCollectionState.startedAt =
-        new Date().toISOString();
-      historicalCollectionState.finishedAt = null;
-      historicalCollectionState.error = null;
-      historicalCollectionState.targetPerSymbol =
-        TARGET_TICKS_PER_SYMBOL;
-      historicalCollectionState.symbols = [symbol];
-      historicalCollectionState.currentSymbol =
-        symbol;
-      historicalCollectionState.results = [];
-
-      setImmediate(async () => {
-        try {
-          const result =
-            await collectHistoricalTicks(
-              symbol,
-              TARGET_TICKS_PER_SYMBOL
-            );
-
-          historicalCollectionState.results = [
-            result
-          ];
-          historicalCollectionState.currentSymbol =
-            null;
-          historicalCollectionState.running = false;
-          historicalCollectionState.finishedAt =
-            new Date().toISOString();
-        } catch (error) {
-          historicalCollectionState.currentSymbol =
-            null;
-          historicalCollectionState.running = false;
-          historicalCollectionState.finishedAt =
-            new Date().toISOString();
-          historicalCollectionState.error =
-            error?.message || String(error);
-        }
-      });
 
       return res.status(202).json({
         success: true,
         status: 'STARTED',
         symbol,
-        targetPerSymbol:
-          TARGET_TICKS_PER_SYMBOL,
-        monitor:
-          '/historical/status'
+        targetPerSymbol: TARGET_TICKS_PER_SYMBOL,
+        monitor: '/historical/status'
       });
     } catch (error) {
-      console.error(
-        '❌ HISTORICAL ROUTE ERROR:',
-        error?.message || String(error)
-      );
-
       return res.status(500).json({
         success: false,
-        error:
-          error?.message ||
-          'Historical collection failed'
+        error: error?.message || 'Unable to start historical collection'
       });
     }
   }
