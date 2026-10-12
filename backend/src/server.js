@@ -12,6 +12,7 @@ import authRoutes from './routes/auth.js';
 import userRoutes from './routes/user.js';
 import tickRoutes from './routes/ticks.js';
 import historicalRoutes from './routes/historical.js';
+import { resumeHistoricalCollectionOnStartup } from './services/HistoricalCollectionRunner.js';
 
 dotenv.config();
 
@@ -26,6 +27,9 @@ app.set('trust proxy', 1);
  * Connect MongoDB.
  */
 await connectDB();
+
+// Resume any historical collection job persisted before a Render restart.
+await resumeHistoricalCollectionOnStartup();
 
 /*
  * Allowed frontend origins.
