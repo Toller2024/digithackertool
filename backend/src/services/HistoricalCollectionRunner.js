@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import HistoricalCollectionJob from '../models/HistoricalCollectionJob.js';
 import {
   collectHistoricalTicks,
@@ -7,6 +8,9 @@ import {
 
 const JOB_ID = 'historical-collection';
 const RETRY_DELAY_MS = 15000;
+const LEASE_MS = 120000;
+const HEARTBEAT_MS = 20000;
+const WORKER_ID = randomUUID();
 
 const sleep = (ms) =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -55,10 +59,52 @@ let workerActive = false;
 async function runWorker() {
   if (workerActive) return;
   workerActive = true;
+  let heartbeat = null;
 
   try {
-    let job = await HistoricalCollectionJob.findById(JOB_ID).lean();
-    if (!job?.running) return;
+    const now = new Date();
+    const claimed = await HistoricalCollectionJob.findOneAndUpdate(
+      {
+        _id: JOB_ID,
+        running: true,
+        $or: [
+          { workerId: null },
+          { workerId: { $exists: false } },
+          { leaseUntil: null },
+          { leaseUntil: { $lt: now } },
+          { workerId: WORKER_ID }
+        ]
+      },
+      {
+        $set: {
+          workerId: WORKER_ID,
+          leaseUntil: new Date(Date.now() + LEASE_MS)
+        }
+      },
+      { new: true }
+    ).lean();
+
+    if (!claimed) {
+      workerActive = false;
+      const retryTimer = setTimeout(() => {
+        runWorker().catch((error) => {
+          console.error('[HISTORICAL RESUME] Lease retry failed:', error);
+        });
+      }, 30000);
+      retryTimer.unref?.();
+      return;
+    }
+
+    heartbeat = setInterval(() => {
+      HistoricalCollectionJob.updateOne(
+        { _id: JOB_ID, running: true, workerId: WORKER_ID },
+        { $set: { leaseUntil: new Date(Date.now() + LEASE_MS) } }
+      ).catch((error) => {
+        console.error('[HISTORICAL RESUME] Lease heartbeat failed:', error?.message || String(error));
+      });
+    }, HEARTBEAT_MS);
+
+    let job = claimed;
 
     const symbols = Array.isArray(job.symbols) && job.symbols.length
       ? job.symbols.filter((symbol) => SYMBOLS.includes(symbol))
@@ -118,6 +164,8 @@ async function runWorker() {
       await patchJob({
         running: false,
         currentSymbol: null,
+        workerId: null,
+        leaseUntil: null,
         finishedAt: new Date(),
         error: null
       });
@@ -131,6 +179,7 @@ async function runWorker() {
       currentSymbol: null
     }).catch(() => {});
   } finally {
+    if (heartbeat) clearInterval(heartbeat);
     workerActive = false;
   }
 }
@@ -162,6 +211,8 @@ export async function startPersistentHistoricalCollection(
     targetPerSymbol: TARGET_TICKS_PER_SYMBOL,
     symbols,
     currentSymbol: null,
+    workerId: null,
+    leaseUntil: null,
     results: []
   });
 
