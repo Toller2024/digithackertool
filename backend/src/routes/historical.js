@@ -9,6 +9,10 @@ import {
   SYMBOLS,
   TARGET_TICKS_PER_SYMBOL
 } from '../services/historicalTicks.js';
+import {
+  getHistoricalCollectionStatus,
+  startPersistentHistoricalCollection
+} from '../services/HistoricalCollectionRunner.js';
 
 import {
   rebuildTimePatternMemory,
@@ -201,9 +205,7 @@ router.get('/status', async (req, res) => {
         symbolStats.every(
           (item) => item.complete
         ),
-      collection: {
-        ...historicalCollectionState
-      },
+      collection: await getHistoricalCollectionStatus(),
       symbols: symbolStats
     });
   } catch (error) {
@@ -242,84 +244,40 @@ const startHistoricalCollection = async (req, res) => {
     });
   }
 
-  if (historicalCollectionState.running) {
-    return res.status(409).json({
-      success: false,
-      status: 'RUNNING',
+  try {
+    const result = await startPersistentHistoricalCollection(SYMBOLS);
+
+    if (!result.started) {
+      return res.status(409).json({
+        success: false,
+        status: 'RUNNING',
+        message:
+          'Historical collection is already running. It is stored in MongoDB and will resume after a backend restart.',
+        collection: result.status
+      });
+    }
+
+    return res.status(202).json({
+      success: true,
+      status: 'STARTED',
       message:
-        'Million-tick historical collection is already running.',
-      collection:
-        historicalCollectionState
+        'Historical collection started. Progress is saved in MongoDB and the worker will resume after a Render restart.',
+      targetPerSymbol: TARGET_TICKS_PER_SYMBOL,
+      totalTarget: TARGET_TICKS_PER_SYMBOL * SYMBOLS.length,
+      symbols: SYMBOLS,
+      monitor: '/historical/status'
+    });
+  } catch (error) {
+    console.error(
+      '❌ HISTORICAL COLLECTION START ERROR:',
+      error?.message || String(error)
+    );
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Unable to start historical collection'
     });
   }
-
-  historicalCollectionState.running = true;
-  historicalCollectionState.startedAt =
-    new Date().toISOString();
-  historicalCollectionState.finishedAt = null;
-  historicalCollectionState.error = null;
-  historicalCollectionState.targetPerSymbol =
-    TARGET_TICKS_PER_SYMBOL;
-  historicalCollectionState.symbols = SYMBOLS;
-  historicalCollectionState.currentSymbol = null;
-  historicalCollectionState.results = [];
-
-  setImmediate(async () => {
-    try {
-      for (const symbol of SYMBOLS) {
-        historicalCollectionState.currentSymbol =
-          symbol;
-
-        const result =
-          await collectHistoricalTicks(
-            symbol,
-            TARGET_TICKS_PER_SYMBOL
-          );
-
-        historicalCollectionState.results.push(
-          result
-        );
-      }
-
-      historicalCollectionState.currentSymbol =
-        null;
-      historicalCollectionState.running = false;
-      historicalCollectionState.finishedAt =
-        new Date().toISOString();
-
-      console.log(
-        '✅ LONG-TERM HISTORICAL COLLECTION COMPLETE'
-      );
-    } catch (error) {
-      historicalCollectionState.currentSymbol =
-        null;
-      historicalCollectionState.running = false;
-      historicalCollectionState.finishedAt =
-        new Date().toISOString();
-      historicalCollectionState.error =
-        error?.message || String(error);
-
-      console.error(
-        '❌ LONG-TERM HISTORICAL COLLECTION ERROR:',
-        error?.message || String(error)
-      );
-    }
-  });
-
-  return res.status(202).json({
-    success: true,
-    status: 'STARTED',
-    message:
-      'Long-term historical collection started in the background.',
-    targetPerSymbol:
-      TARGET_TICKS_PER_SYMBOL,
-    totalTarget:
-      TARGET_TICKS_PER_SYMBOL *
-      SYMBOLS.length,
-    symbols: SYMBOLS,
-    monitor:
-      '/historical/status'
-  });
 };
 
 router.post(
