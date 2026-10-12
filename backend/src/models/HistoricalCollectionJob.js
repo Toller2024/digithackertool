@@ -34,6 +34,14 @@ const historicalCollectionJobSchema = new mongoose.Schema(
       type: String,
       default: null
     },
+    workerId: {
+      type: String,
+      default: null
+    },
+    leaseUntil: {
+      type: Date,
+      default: null
+    },
     results: {
       type: [mongoose.Schema.Types.Mixed],
       default: []
